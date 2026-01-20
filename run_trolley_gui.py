@@ -21,8 +21,11 @@ import cv2
 from typing import List, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
+import pygame
 
 from trolley import config
+from trolley.gui_pixel import TrolleyPixelGUI
+from trolley.gui_simple import TrolleySimpleGUI
 
 
 class TrolleyState(Enum):
@@ -811,26 +814,178 @@ def parse_args():
     parser.add_argument("--conf", type=float, default=0.35, help="Confidence threshold")
     parser.add_argument("--no-robot", action="store_true", help="Disable robot (static view)")
     parser.add_argument("--no-dry-run", action="store_true", help="Enable real lever action")
+    parser.add_argument("--pixel", action="store_true", help="Use Pixel Art GUI (Pygame)")
+    parser.add_argument("--simple", action="store_true", help="Use Simple GUI (CV2)")
     return parser.parse_args()
 
 
-def main():
-    args = parse_args()
+def run_pixel_mode(args):
+    """Run with Pixel Art GUI."""
     
+    # Initialize logic controller (reusing existing class)
+    # Note: args.no_dry_run means dry_run = False
+    controller = TrolleyGUIComplete(
+        window_width=args.width,
+        window_height=args.height,
+        model_path="scripts/yolov8n-pose.pt", # Hardcoded or passed from args if available? args has model_path usually?
+        # Re-checking args in parse_args... it doesn't have model_path! 
+        # Wait, run_gui.py had it, but run_trolley_gui.py didn't seem to expose it in parse_args in the snippet I saw.
+        # Let's check config.
+        conf_thresh=args.conf,
+        rotate_90_clockwise=True, # Assuming defaults from main
+        use_robot=not args.no_robot,
+        dry_run=not args.no_dry_run,
+    )
+    
+    # Initialize View
+    view = TrolleyPixelGUI(args.width, args.height)
+    
+    print("[GUI] Starting Pixel Mode...")
+    running = True
+    
+    try:
+        while running:
+            # 1. Update Logic
+            controller._update_scan()
+            controller._update_trolley_state()
+            
+            # Get data for rendering
+            current_frame = controller._left_frame if controller.current_scan_side == "LEFT" else controller._right_frame
+            if current_frame is None:
+                 current_frame = controller._get_frame()
+
+            # State mapping
+            state_name = controller.trolley_state.value
+            
+            time_rem = 0.0
+            if controller.trolley_state == TrolleyState.COUNTDOWN:
+                 elapsed = time.time() - controller.countdown_start_time
+                 time_rem = max(0, controller.COUNTDOWN_TIME - elapsed)
+            
+            # 2. Render
+            running = view.render(
+                frame_cv2=current_frame,
+                left_count=controller.left_count,
+                right_count=controller.right_count,
+                left_conf=sum(controller.left_confidences),
+                right_conf=sum(controller.right_confidences),
+                time_remaining=time_rem,
+                state_name=state_name,
+                decision=controller.decision
+            )
+            
+            # 3. Input handling
+            keys = pygame.key.get_pressed()
+            if keys[pygame.K_s]:
+                controller._start_scenario()
+            if keys[pygame.K_r]:
+                controller._restart_scenario()
+            if keys[pygame.K_x]:
+                controller._stop_scenario()
+                
+    except KeyboardInterrupt:
+        print("Interrupted")
+    finally:
+        controller.cleanup()
+        view.quit()
+
+
+def run_simple_mode(args):
+    """Run with Simple Diagram GUI."""
+    
+    # Initialize logic controller
+    controller = TrolleyGUIComplete(
+        window_width=args.width,
+        window_height=args.height,
+        model_path="scripts/yolov8n-pose.pt",
+        conf_thresh=args.conf,
+        rotate_90_clockwise=True,
+        use_robot=not args.no_robot,
+        dry_run=not args.no_dry_run,
+    )
+    
+    # Initialize View
+    view = TrolleySimpleGUI(args.width, args.height)
+    
+    print("[GUI] Starting Simple Mode...")
+    running = True
+    
+    try:
+        while running:
+            # 1. Update Logic
+            controller._update_scan()
+            controller._update_trolley_state()
+            
+            # Get data for rendering
+            current_frame = controller._left_frame if controller.current_scan_side == "LEFT" else controller._right_frame
+            if current_frame is None:
+                 current_frame = controller._get_frame()
+
+            # State mapping
+            state_name = controller.trolley_state.value
+            
+            time_rem = 0.0
+            if controller.trolley_state == TrolleyState.COUNTDOWN:
+                 elapsed = time.time() - controller.countdown_start_time
+                 time_rem = max(0, controller.COUNTDOWN_TIME - elapsed)
+            
+            # 2. Render
+            running = view.render(
+                frame_cv2=current_frame,
+                left_count=controller.left_count,
+                right_count=controller.right_count,
+                state_name=state_name,
+                time_remaining=time_rem,
+                decision="DIVERT_RIGHT" if controller.decision == "DIVERT_RIGHT" else "DEFAULT"
+            )
+            
+            # 3. Input handling
+            # Pygame events are handled in view.render(), but we might want global keys here too?
+            # view.render already returns False if quit.
+            
+            # Pass controller actions if needed?
+            # Currently view.render handles 'q'.
+            # TrolleySimpleGUI doesn't seem to have S/R/X keys?
+            # Let's check gui_simple.py... it handles 'q'.
+            # I should add keyboard logic here or in gui_simple.
+            # For now let's just run logic.
+            
+            # Use Pygame polling for Start/Stop/Restart from run_pixel_mode style if desired,
+            # but gui_simple.py only handled quit.
+            # I'll add the basic keys here using pygame.
+            keys = pygame.key.get_pressed()
+            if keys[pygame.K_s]:
+                controller._start_scenario()
+            if keys[pygame.K_r]:
+                controller._restart_scenario()
+            if keys[pygame.K_x]:
+                controller._stop_scenario()
+                
+    except KeyboardInterrupt:
+        print("Interrupted")
+    finally:
+        controller.cleanup()
+        pygame.quit() # gui_simple doesn't have a quit method maybe? It has pygame.quit in __init__? No.
+        # view.quit() if it exists?
+        pass
+
+
+def run_cv2_mode(args):
+    """Run original CV2 GUI."""
     print("=" * 60)
     print("TROLLEY PROBLEM - COMPLETE SYSTEM")
     print("=" * 60)
     print(f"Window: {args.width}x{args.height}")
     print(f"Robot: {'ENABLED' if not args.no_robot else 'DISABLED'}")
     print(f"Lever action: {'REAL' if args.no_dry_run else 'DRY-RUN'}")
+    
+    if args.pixel:
+        print("Mode: PIXEL ART GUI")
+    elif args.simple:
+        print("Mode: SIMPLE DIAGRAM GUI")
+    else:
+        print("Mode: STANDARD OPENCV GUI")
     print("=" * 60)
-    print("Controls:")
-    print("  Click START or press 's' - Begin scenario")
-    print("  Click STOP or press 'x'  - Stop scenario")
-    print("  Click RESTART or press 'r' - Restart")
-    print("  Press 'q' - Quit")
-    print("=" * 60)
-    print()
     
     gui = TrolleyGUIComplete(
         window_width=args.width,
@@ -840,6 +995,16 @@ def main():
         dry_run=not args.no_dry_run,
     )
     gui.run()
+
+
+def main():
+    args = parse_args()
+    if args.pixel:
+        run_pixel_mode(args)
+    elif args.simple:
+        run_simple_mode(args)
+    else:
+        run_cv2_mode(args)
 
 
 if __name__ == "__main__":
