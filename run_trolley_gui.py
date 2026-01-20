@@ -917,9 +917,15 @@ def run_simple_mode(args):
             controller._update_trolley_state()
             
             # Get data for rendering
-            current_frame = controller._left_frame if controller.current_scan_side == "LEFT" else controller._right_frame
-            if current_frame is None:
-                 current_frame = controller._get_frame()
+            left_frame = controller._left_frame
+            right_frame = controller._right_frame
+            
+            # Get current live frame if available
+            current_live_frame = controller._get_frame()
+            if left_frame is None:
+                left_frame = current_live_frame if controller.current_scan_side == "LEFT" else None
+            if right_frame is None:
+                right_frame = current_live_frame if controller.current_scan_side == "RIGHT" else None
 
             # State mapping
             state_name = controller.trolley_state.value
@@ -929,11 +935,18 @@ def run_simple_mode(args):
                  elapsed = time.time() - controller.countdown_start_time
                  time_rem = max(0, controller.COUNTDOWN_TIME - elapsed)
             
+            # Calculate confidence sums
+            left_conf_sum = sum(controller.left_confidences) if controller.left_confidences else 0.0
+            right_conf_sum = sum(controller.right_confidences) if controller.right_confidences else 0.0
+            
             # 2. Render
             running = view.render(
-                frame_cv2=current_frame,
+                left_frame_cv2=left_frame,
+                right_frame_cv2=right_frame,
                 left_count=controller.left_count,
                 right_count=controller.right_count,
+                left_conf_sum=left_conf_sum,
+                right_conf_sum=right_conf_sum,
                 state_name=state_name,
                 time_remaining=time_rem,
                 decision="DIVERT_RIGHT" if controller.decision == "DIVERT_RIGHT" else "DEFAULT"
