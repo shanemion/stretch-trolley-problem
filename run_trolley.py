@@ -82,6 +82,19 @@ def parse_args():
         help="Use real camera for perception (opposite of --mock-perception)",
     )
     
+    parser.add_argument(
+        "--scanning",
+        action="store_true",
+        default=config.USE_SCANNING,
+        help="Enable head scanning for wider FOV (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--no-scanning",
+        dest="scanning",
+        action="store_false",
+        help="Disable head scanning (static camera view)",
+    )
+    
     return parser.parse_args()
 
 
@@ -117,11 +130,14 @@ def main():
     
     # Initialize perception
     print("Initializing perception system...")
+    if not args.mock_perception and args.scanning:
+        print("  -> Head scanning mode ENABLED (wider FOV)")
     counter = PeopleCounter(
         conf_thresh=args.conf,
         model_path=args.model_path,
         rotate_90_clockwise=config.ROTATE_90_CLOCKWISE,
         use_mock=args.mock_perception,
+        use_scanning=args.scanning if not args.mock_perception else False,
     )
     
     # Initialize robot (if not dry-run)

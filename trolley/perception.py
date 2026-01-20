@@ -1,7 +1,10 @@
 """
 People counting module for trolley problem.
 
-Supports both mock (terminal input) and real camera (RealSense + YOLO) modes.
+Supports:
+- Mock mode: terminal input for development/testing
+- Static camera mode: RealSense + YOLO with nose-based left/right split
+- Scanning camera mode: Robot pans head left/right to expand FOV
 """
 
 import time
@@ -30,12 +33,19 @@ class PersonDet:
 
 class PeopleCounter:
     """
-    Counts people on left vs right side of camera view.
+    Counts people on left vs right side.
     
-    Supports two modes:
-    - Mock mode: terminal input for development/testing
-    - Camera mode: RealSense + YOLO pose detection
+    Modes:
+    - Mock: terminal input
+    - Static camera: nose-based split
+    - Scanning camera: head pans left/right, all detections in each view go to that side
     """
+    
+    # Head pan positions (radians) for scanning mode
+    PAN_LEFT = 0.4      # ~23 degrees left
+    PAN_RIGHT = -0.4    # ~23 degrees right
+    PAN_CENTER = 0.0    # Center position
+    SCAN_SETTLE_TIME = 0.3  # Time to wait after head movement
     
     def __init__(
         self,
@@ -43,6 +53,7 @@ class PeopleCounter:
         model_path: str = "scripts/yolov8n-pose.pt",
         rotate_90_clockwise: bool = True,
         use_mock: bool = True,
+        use_scanning: bool = False,
     ):
         """
         Initialize people counter.
@@ -51,14 +62,16 @@ class PeopleCounter:
             conf_thresh: Confidence threshold for YOLO detection
             model_path: Path to YOLO model
             rotate_90_clockwise: Camera rotation flag
-            use_mock: If True, use terminal input; if False, use camera
+            use_mock: If True, use terminal input
+            use_scanning: If True, use head scanning (requires robot)
         """
         self.conf_thresh = conf_thresh
         self.model_path = model_path
         self.rotate_90_clockwise = rotate_90_clockwise
         self.use_mock = use_mock
+        self.use_scanning = use_scanning
         
-        # Camera-related attributes (initialized if not mock)
+        # Camera-related attributes
         self.model = None
         self.pipeline = None
         self.align = None
@@ -66,8 +79,14 @@ class PeopleCounter:
         self.img_height = 0
         self.center_x = 0.0
         
+        # Robot for scanning
+        self.robot = None
+        self.robot_initialized = False
+        
         if not use_mock:
             self._init_camera()
+            if use_scanning:
+                self._init_robot()
         else:
             print("[PeopleCounter] Initialized in MOCK mode (terminal input)")
     
@@ -78,7 +97,6 @@ class PeopleCounter:
         import pyrealsense2 as rs
         from ultralytics import YOLO
         
-        # Store imports for later use
         self._np = np
         self._cv2 = cv2
         self._rs = rs
@@ -91,11 +109,8 @@ class PeopleCounter:
         config = rs.config()
         config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
         self.pipeline.start(config)
-        
-        # Align to color stream
         self.align = rs.align(rs.stream.color)
         
-        # Compute image geometry (after optional rotation)
         if self.rotate_90_clockwise:
             self.img_width = 480
             self.img_height = 640
@@ -104,9 +119,38 @@ class PeopleCounter:
             self.img_height = 480
         self.center_x = self.img_width / 2.0
         
-        print(f"[PeopleCounter] Camera initialized (center_x={self.center_x:.1f})")
-        print(f"[PeopleCounter] Confidence threshold: {self.conf_thresh}")
-        print("[PeopleCounter] Ready for camera mode.\n")
+        mode = "SCANNING" if self.use_scanning else "STATIC"
+        print(f"[PeopleCounter] Camera initialized ({mode} mode)")
+    
+    def _init_robot(self):
+        """Initialize robot for head scanning."""
+        try:
+            print("[PeopleCounter] Initializing robot for head scanning...")
+            import stretch_body.robot as robot_module
+            
+            self.robot = robot_module.Robot()
+            did_startup = self.robot.startup()
+            if not did_startup:
+                print("[PeopleCounter] Warning: Robot startup returned False")
+            
+            self.robot_initialized = True
+            self._move_head_to(self.PAN_CENTER)
+            print("[PeopleCounter] Robot ready for head scanning!")
+            
+        except Exception as e:
+            self.robot_initialized = False
+            print(f"[PeopleCounter] Robot init failed: {e}")
+            print("[PeopleCounter] Falling back to static camera mode")
+    
+    def _move_head_to(self, pan_position: float):
+        """Move head to specified pan position."""
+        if not self.robot_initialized or self.robot is None:
+            return
+        try:
+            self.robot.head.move_to('head_pan', pan_position)
+            self.robot.push_command()
+        except Exception as e:
+            print(f"[PeopleCounter] Head movement error: {e}")
     
     def _get_color_frame(self):
         """Get current color frame from RealSense."""
@@ -121,12 +165,8 @@ class PeopleCounter:
             img = self._cv2.rotate(img, self._cv2.ROTATE_90_CLOCKWISE)
         return img
     
-    def _detect_people(self, frame) -> List[PersonDet]:
-        """
-        Run YOLO pose detection on frame.
-        
-        Returns list of PersonDet with confidence and position.
-        """
+    def _detect_people(self, frame, side: str = "") -> List[PersonDet]:
+        """Run YOLO pose detection on frame."""
         results = self.model(frame, verbose=False)
         dets: List[PersonDet] = []
         
@@ -134,33 +174,34 @@ class PeopleCounter:
             if r.keypoints is None or r.boxes is None:
                 continue
             
-            kpts = r.keypoints.xy.cpu().numpy()  # (N, K, 2)
-            boxes = r.boxes.xyxy.cpu().numpy()   # (N, 4)
-            confs = r.boxes.conf.cpu().numpy()   # (N,)
+            kpts = r.keypoints.xy.cpu().numpy()
+            boxes = r.boxes.xyxy.cpu().numpy()
+            confs = r.boxes.conf.cpu().numpy()
             
             for i in range(len(confs)):
                 conf = float(confs[i])
                 if conf < self.conf_thresh:
                     continue
                 
-                # Nose (keypoint 0)
                 nose_x, nose_y = kpts[i][0]
-                
-                # Skip invalid keypoints
                 if nose_x <= 0 or nose_y <= 0:
                     continue
                 
                 x1, y1, x2, y2 = boxes[i]
                 
-                # Determine side based on nose position
-                side = "LEFT" if nose_x < self.center_x else "RIGHT"
+                # If side is specified (scanning mode), use it
+                # Otherwise, determine by nose position (static mode)
+                if side:
+                    det_side = side
+                else:
+                    det_side = "LEFT" if nose_x < self.center_x else "RIGHT"
                 
                 dets.append(PersonDet(
                     x1=float(x1), y1=float(y1),
                     x2=float(x2), y2=float(y2),
                     nose_x=float(nose_x), nose_y=float(nose_y),
                     conf=conf,
-                    side=side
+                    side=det_side
                 ))
         
         return dets
@@ -171,28 +212,69 @@ class PeopleCounter:
         
         Returns:
             Tuple of (left_count, right_count, metadata_dict)
-            
-        Metadata dict contains:
-            - timestamp: float (current time)
-            - total_detections: int
-            - confidences: list of floats (per-person confidence)
-            - left_confidences: list of floats
-            - right_confidences: list of floats
-            - detections: list of PersonDet objects (for detailed logging)
-            - sample_valid: bool
-            - source: str ("camera" or "terminal_input")
         """
         if self.use_mock:
             return self._get_counts_mock()
+        elif self.use_scanning and self.robot_initialized:
+            return self._get_counts_scanning()
         else:
-            return self._get_counts_camera()
+            return self._get_counts_static()
     
-    def _get_counts_camera(self) -> Tuple[int, int, Dict]:
-        """Get counts from camera using YOLO detection."""
+    def _get_counts_scanning(self) -> Tuple[int, int, Dict]:
+        """Get counts using head scanning (pans left, then right)."""
+        left_dets = []
+        right_dets = []
+        
+        # Look LEFT
+        self._move_head_to(self.PAN_LEFT)
+        time.sleep(self.SCAN_SETTLE_TIME)
+        
+        for _ in range(3):  # Multiple captures for robustness
+            frame = self._get_color_frame()
+            if frame is not None:
+                dets = self._detect_people(frame, side="LEFT")
+                if len(dets) > len(left_dets):
+                    left_dets = dets
+            time.sleep(0.1)
+        
+        # Look RIGHT
+        self._move_head_to(self.PAN_RIGHT)
+        time.sleep(self.SCAN_SETTLE_TIME)
+        
+        for _ in range(3):
+            frame = self._get_color_frame()
+            if frame is not None:
+                dets = self._detect_people(frame, side="RIGHT")
+                if len(dets) > len(right_dets):
+                    right_dets = dets
+            time.sleep(0.1)
+        
+        # Return to center
+        self._move_head_to(self.PAN_CENTER)
+        
+        left_count = len(left_dets)
+        right_count = len(right_dets)
+        left_confs = [d.conf for d in left_dets]
+        right_confs = [d.conf for d in right_dets]
+        
+        meta = {
+            "timestamp": time.time(),
+            "total_detections": left_count + right_count,
+            "confidences": left_confs + right_confs,
+            "left_confidences": left_confs,
+            "right_confidences": right_confs,
+            "detections": left_dets + right_dets,
+            "sample_valid": True,
+            "source": "scanning_camera",
+        }
+        
+        return left_count, right_count, meta
+    
+    def _get_counts_static(self) -> Tuple[int, int, Dict]:
+        """Get counts from static camera (nose-based split)."""
         frame = self._get_color_frame()
         
         if frame is None:
-            # Invalid frame
             return 0, 0, {
                 "timestamp": time.time(),
                 "total_detections": 0,
@@ -201,33 +283,28 @@ class PeopleCounter:
                 "right_confidences": [],
                 "detections": [],
                 "sample_valid": False,
-                "source": "camera",
+                "source": "static_camera",
             }
         
-        # Run detection
         dets = self._detect_people(frame)
         
-        # Split by side
         left_dets = [d for d in dets if d.side == "LEFT"]
         right_dets = [d for d in dets if d.side == "RIGHT"]
         
         left_count = len(left_dets)
         right_count = len(right_dets)
-        
-        # Extract confidences
-        all_confs = [d.conf for d in dets]
         left_confs = [d.conf for d in left_dets]
         right_confs = [d.conf for d in right_dets]
         
         meta = {
             "timestamp": time.time(),
             "total_detections": len(dets),
-            "confidences": all_confs,
+            "confidences": [d.conf for d in dets],
             "left_confidences": left_confs,
             "right_confidences": right_confs,
             "detections": dets,
             "sample_valid": True,
-            "source": "camera",
+            "source": "static_camera",
         }
         
         return left_count, right_count, meta
@@ -270,10 +347,19 @@ class PeopleCounter:
         return left_count, right_count, meta
     
     def cleanup(self) -> None:
-        """Clean up resources (camera, model, etc.)."""
+        """Clean up resources."""
+        if self.robot_initialized and self.robot is not None:
+            try:
+                self._move_head_to(self.PAN_CENTER)
+                time.sleep(0.3)
+                self.robot.stop()
+            except Exception:
+                pass
+        
         if not self.use_mock and self.pipeline is not None:
             try:
                 self.pipeline.stop()
             except Exception:
                 pass
+        
         print("[PeopleCounter] Cleanup complete")

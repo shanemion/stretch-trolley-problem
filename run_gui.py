@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """
-Launch the Trolley Problem GUI visualization.
+Launch the Trolley Problem GUI visualization with head scanning.
 
-This displays:
+The robot pans its head left and right to expand the field of view:
+- Looking LEFT: captures people on the left track
+- Looking RIGHT: captures people on the right track
+
+Displays:
 - Top Left: Confidence view (left/right aggregate confidence scores)
-- Bottom Left: Camera feed with bounding boxes and center divider
+- Bottom Left: Camera feed showing both left and right captures
 - Right Side: Reserved for future use
 
 Usage:
@@ -22,7 +26,7 @@ from trolley import config
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Trolley Problem GUI - Visual detection display",
+        description="Trolley Problem GUI - Visual detection with head scanning",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     
@@ -60,20 +64,31 @@ def parse_args():
         help="Don't rotate camera feed 90 degrees",
     )
     
+    parser.add_argument(
+        "--no-robot",
+        action="store_true",
+        help="Disable robot head movement (static view with nose-based split)",
+    )
+    
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
     
-    print("=" * 50)
-    print("TROLLEY PROBLEM - DETECTION GUI")
-    print("=" * 50)
+    print("=" * 60)
+    print("TROLLEY PROBLEM - SCANNING DETECTION GUI")
+    print("=" * 60)
     print(f"Window size: {args.width}x{args.height}")
     print(f"Confidence threshold: {args.conf}")
     print(f"Model: {args.model_path}")
     print(f"Rotate camera: {not args.no_rotate}")
-    print("=" * 50)
+    print(f"Head scanning: {'DISABLED' if args.no_robot else 'ENABLED'}")
+    if not args.no_robot:
+        print("  -> Robot will pan left/right to expand FOV")
+        print("  -> LEFT view = people on left track")
+        print("  -> RIGHT view = people on right track")
+    print("=" * 60)
     print()
     
     try:
@@ -83,6 +98,7 @@ def main():
             model_path=args.model_path,
             conf_thresh=args.conf,
             rotate_90_clockwise=not args.no_rotate,
+            use_robot=not args.no_robot,
         )
         gui.run()
     except Exception as e:

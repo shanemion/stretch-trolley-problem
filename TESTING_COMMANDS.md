@@ -4,21 +4,33 @@ Quick reference for all testing commands and options.
 
 ---
 
-## GUI Visualization
+## GUI Visualization (with Head Scanning)
 
-### Launch Detection GUI
+### Launch Detection GUI with Head Scanning
 ```bash
 python run_gui.py
 ```
-- Shows live camera feed with bounding boxes
-- Displays confidence scores for left/right detections
+- Robot pans head LEFT and RIGHT to expand field of view
+- LEFT view = people on left track
+- RIGHT view = people on right track
+- Shows both camera views side by side
+- Displays confidence scores for each side
 - Press 'q' to quit
+
+### GUI without Robot (Static View)
+```bash
+python run_gui.py --no-robot
+```
+- No head movement (camera stays centered)
+- Splits by nose position (like before)
+- Use if robot is unavailable
 
 ### GUI Options
 ```bash
 python run_gui.py --width 1920 --height 1080  # Larger window
 python run_gui.py --conf 0.5                   # Higher confidence threshold
 python run_gui.py --no-rotate                  # Don't rotate camera feed
+python run_gui.py --no-robot                   # Disable head scanning
 ```
 
 ---
@@ -33,14 +45,23 @@ python run_trolley.py --dry-run
 - No hardware movement
 - Good for testing decision logic
 
-### Dry-Run with Real Camera (Test Detection)
+### Dry-Run with Real Camera (Static View)
 ```bash
 python run_trolley.py --no-mock-perception --dry-run
 ```
 - Uses RealSense camera + YOLO detection
-- Logs confidence scores for each person
+- Splits by nose position (static view)
 - No hardware movement
 - Good for testing perception pipeline
+
+### Dry-Run with Camera + Head Scanning (Wider FOV)
+```bash
+python run_trolley.py --no-mock-perception --scanning --dry-run
+```
+- Robot pans head left and right to expand FOV
+- LEFT view = people on left track
+- RIGHT view = people on right track
+- No lever action (dry-run)
 
 ### Real Hardware with Mock Perception (Test Actions)
 ```bash
@@ -140,6 +161,8 @@ python run_trolley.py --no-mock-perception --no-dry-run
 | `--no-dry-run` | Execute hardware actions | - |
 | `--mock-perception` | Use terminal input for counts | `True` |
 | `--no-mock-perception` | Use RealSense camera | - |
+| `--scanning` | Enable head scanning for wider FOV | `False` |
+| `--no-scanning` | Disable head scanning (static view) | - |
 | `--total-wait N` | Total wait time (seconds) | `10.0` |
 | `--final-window N` | Decision window duration (seconds) | `2.0` |
 | `--sample-hz N` | Sampling frequency (Hz) | `5.0` |
