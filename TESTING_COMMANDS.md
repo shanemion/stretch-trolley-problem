@@ -2,6 +2,27 @@
 
 Quick reference for all testing commands and options.
 
+---
+
+## GUI Visualization
+
+### Launch Detection GUI
+```bash
+python run_gui.py
+```
+- Shows live camera feed with bounding boxes
+- Displays confidence scores for left/right detections
+- Press 'q' to quit
+
+### GUI Options
+```bash
+python run_gui.py --width 1920 --height 1080  # Larger window
+python run_gui.py --conf 0.5                   # Higher confidence threshold
+python run_gui.py --no-rotate                  # Don't rotate camera feed
+```
+
+---
+
 ## Basic Commands
 
 ### Dry-Run with Mock Perception (Safest - No Hardware)
