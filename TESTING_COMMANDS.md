@@ -3,6 +3,8 @@
 Quick reference for all testing commands and options.
 
 ---
+ssh cs334@171.64.68.11
+
 
 ## Complete Trolley GUI (Recommended)
 
