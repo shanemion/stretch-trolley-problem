@@ -816,6 +816,7 @@ def parse_args():
     parser.add_argument("--no-dry-run", action="store_true", help="Enable real lever action")
     parser.add_argument("--pixel", action="store_true", help="Use Pixel Art GUI (Pygame)")
     parser.add_argument("--simple", action="store_true", help="Use Simple GUI (CV2)")
+    parser.add_argument("--fullscreen", action="store_true", help="Run in fullscreen mode")
     return parser.parse_args()
 
 
@@ -905,7 +906,7 @@ def run_simple_mode(args):
     )
     
     # Initialize View
-    view = TrolleySimpleGUI(args.width, args.height)
+    view = TrolleySimpleGUI(args.width, args.height, fullscreen=args.fullscreen)
     
     print("[GUI] Starting Simple Mode...")
     running = True

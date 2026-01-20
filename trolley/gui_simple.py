@@ -16,14 +16,23 @@ class TrolleySimpleGUI:
     COLOR_TEXT = (30, 30, 30) # Near black text
     COLOR_FRAME = (50, 50, 50) # Dark gray frame
         
-    def __init__(self, window_width=1280, window_height=720):
-        self.window_width = window_width
-        self.window_height = window_height
-        
+    def __init__(self, window_width=1280, window_height=720, fullscreen=False):
         # Pygame init
         pygame.init()
         pygame.display.set_caption("Trolley Problem - Projector Display")
-        self.screen = pygame.display.set_mode((window_width, window_height))
+        
+        if fullscreen:
+            # Get current display info for maximized window
+            info = pygame.display.Info()
+            self.window_width = info.current_w
+            self.window_height = info.current_h
+            # Use borderless window that covers the screen (not true fullscreen)
+            self.screen = pygame.display.set_mode((self.window_width, self.window_height), pygame.NOFRAME)
+        else:
+            self.window_width = window_width
+            self.window_height = window_height
+            self.screen = pygame.display.set_mode((window_width, window_height))
+        
         self.clock = pygame.time.Clock()
         
         # Fonts
@@ -33,8 +42,9 @@ class TrolleySimpleGUI:
         self.font_huge = pygame.font.Font(None, 120)
         
         # Layout: Left panel, Center tracks, Right panel
-        self.panel_width = int(window_width * 0.28)  # ~28% each side
-        self.center_width = window_width - (2 * self.panel_width)
+        # Use self.window_width/height (which are set correctly for fullscreen)
+        self.panel_width = int(self.window_width * 0.20)  # ~20% each side for better proportions
+        self.center_width = self.window_width - (2 * self.panel_width)
         
         # Camera feed size within panels
         self.cam_display_w = int(self.panel_width * 0.85)
@@ -46,9 +56,9 @@ class TrolleySimpleGUI:
             # Scale background to fit center area
             bg_w = self.img_bg.get_width()
             bg_h = self.img_bg.get_height()
-            scale_bg = window_height / bg_h
+            scale_bg = self.window_height / bg_h
             new_w = int(bg_w * scale_bg)
-            self.img_bg = pygame.transform.scale(self.img_bg, (new_w, window_height))
+            self.img_bg = pygame.transform.scale(self.img_bg, (new_w, self.window_height))
             # Center the track image in the center panel area
             center_start = self.panel_width
             self.bg_x = center_start + (self.center_width - new_w) // 2
