@@ -29,6 +29,13 @@ def median_or_fallback(values: list) -> int:
     return int(statistics.median(values))
 
 
+def _format_confidences(confs: list) -> str:
+    """Format list of confidence values for display."""
+    if not confs:
+        return "[]"
+    return "[" + ", ".join(f"{c:.2f}" for c in confs) + "]"
+
+
 def decide_and_act(
     counter,
     robot: Optional[object],
@@ -127,8 +134,9 @@ def decide_and_act(
         print(f"\n[t={total_wait:.1f}s] Time's up!")
         
     else:
-        # CAMERA MODE: Sample at regular intervals
+        # CAMERA MODE: Sample at regular intervals with confidence logging
         print("CAMERA MODE: Sampling from camera...")
+        print("(Logging confidence scores for each detected person)")
         print()
         
         start_time = time.time()
@@ -136,6 +144,10 @@ def decide_and_act(
         final_start_time = start_time + warmup_duration
         next_sample_time = start_time
         last_progress_log = start_time
+        
+        # Store all confidences for summary
+        all_left_confs = []
+        all_right_confs = []
         
         while time.time() < end_time:
             current_time = time.time()
@@ -146,15 +158,40 @@ def decide_and_act(
                 
                 sample_time = time.time()
                 elapsed = sample_time - start_time
+                remaining = total_wait - elapsed
                 in_final_window = sample_time >= final_start_time
+                
+                # Extract confidence info
+                left_confs = meta.get("left_confidences", [])
+                right_confs = meta.get("right_confidences", [])
+                detections = meta.get("detections", [])
+                sample_valid = meta.get("sample_valid", True)
+                
+                # Format confidence strings
+                left_conf_str = _format_confidences(left_confs)
+                right_conf_str = _format_confidences(right_confs)
                 
                 if in_final_window:
                     buffer_left.append(left_count)
                     buffer_right.append(right_count)
-                    print(f"[t={elapsed:.1f}s] Sample: L={left_count} R={right_count} (recording)")
+                    all_left_confs.extend(left_confs)
+                    all_right_confs.extend(right_confs)
+                    
+                    phase = "RECORDING"
+                    print(f"[t={elapsed:5.1f}s] L={left_count} R={right_count} ({phase}) | {remaining:.1f}s left")
+                    if detections:
+                        for det in detections:
+                            print(f"         -> {det.side:<5} conf={det.conf:.3f} nose=({det.nose_x:.0f},{det.nose_y:.0f})")
+                    else:
+                        print(f"         -> (no detections)")
                 else:
-                    if sample_time - last_progress_log >= 2.0:
-                        print(f"[t={elapsed:.1f}s] L={left_count} R={right_count} (warm-up)")
+                    # Warm-up: log every 1 second
+                    if sample_time - last_progress_log >= 1.0:
+                        phase = "warm-up"
+                        print(f"[t={elapsed:5.1f}s] L={left_count} R={right_count} ({phase}) | {remaining:.1f}s left")
+                        if detections:
+                            for det in detections:
+                                print(f"         -> {det.side:<5} conf={det.conf:.3f}")
                         last_progress_log = sample_time
                 
                 next_sample_time = sample_time + sample_dt
@@ -162,6 +199,20 @@ def decide_and_act(
             time.sleep(0.01)
         
         print(f"\n[t={total_wait:.1f}s] Sampling complete.")
+        
+        # Summary of confidences from final window
+        if all_left_confs or all_right_confs:
+            print("\nConfidence summary (final window):")
+            if all_left_confs:
+                avg_l = sum(all_left_confs) / len(all_left_confs)
+                min_l = min(all_left_confs)
+                max_l = max(all_left_confs)
+                print(f"  LEFT:  n={len(all_left_confs)} avg={avg_l:.3f} min={min_l:.3f} max={max_l:.3f}")
+            if all_right_confs:
+                avg_r = sum(all_right_confs) / len(all_right_confs)
+                min_r = min(all_right_confs)
+                max_r = max(all_right_confs)
+                print(f"  RIGHT: n={len(all_right_confs)} avg={avg_r:.3f} min={min_r:.3f} max={max_r:.3f}")
     
     # Decision phase
     print()
