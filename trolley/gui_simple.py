@@ -31,7 +31,8 @@ class TrolleySimpleGUI:
         else:
             self.window_width = window_width
             self.window_height = window_height
-            self.screen = pygame.display.set_mode((window_width, window_height))
+            # Enable resizable window
+            self.screen = pygame.display.set_mode((window_width, window_height), pygame.RESIZABLE)
         
         self.clock = pygame.time.Clock()
         
@@ -41,38 +42,42 @@ class TrolleySimpleGUI:
         self.font_large = pygame.font.Font(None, 72)
         self.font_huge = pygame.font.Font(None, 120)
         
+        # Load original assets (before scaling)
+        try:
+            self.img_bg_original = pygame.image.load("assets/tracks_front_perspective.png").convert()
+            self.img_trolley = pygame.image.load("assets/simple_trolley.png").convert_alpha()
+            self.trolley_base_w = self.img_trolley.get_width()
+            self.trolley_base_h = self.img_trolley.get_height()
+            self.assets_loaded = True
+        except Exception as e:
+            print(f"Failed to load simple assets: {e}")
+            self.assets_loaded = False
+        
+        # Calculate layout based on current window size
+        self._recalculate_layout()
+        
+        self.start_time = None
+    
+    def _recalculate_layout(self):
+        """Recalculate layout when window is resized."""
         # Layout: Left panel, Center tracks, Right panel
-        # Use self.window_width/height (which are set correctly for fullscreen)
-        self.panel_width = int(self.window_width * 0.20)  # ~20% each side for better proportions
+        self.panel_width = int(self.window_width * 0.20)  # ~20% each side
         self.center_width = self.window_width - (2 * self.panel_width)
         
         # Camera feed size within panels
         self.cam_display_w = int(self.panel_width * 0.85)
         self.cam_display_h = int(self.cam_display_w * 0.75)  # 4:3 aspect
         
-        # Load Assets
-        try:
-            self.img_bg = pygame.image.load("assets/tracks_front_perspective.png").convert()
-            # Scale background to fit center area
-            bg_w = self.img_bg.get_width()
-            bg_h = self.img_bg.get_height()
+        # Scale background to fit
+        if self.assets_loaded:
+            bg_w = self.img_bg_original.get_width()
+            bg_h = self.img_bg_original.get_height()
             scale_bg = self.window_height / bg_h
             new_w = int(bg_w * scale_bg)
-            self.img_bg = pygame.transform.scale(self.img_bg, (new_w, self.window_height))
+            self.img_bg = pygame.transform.scale(self.img_bg_original, (new_w, self.window_height))
             # Center the track image in the center panel area
             center_start = self.panel_width
             self.bg_x = center_start + (self.center_width - new_w) // 2
-            
-            self.img_trolley = pygame.image.load("assets/simple_trolley.png").convert_alpha()
-            self.trolley_base_w = self.img_trolley.get_width()
-            self.trolley_base_h = self.img_trolley.get_height()
-            
-            self.assets_loaded = True
-        except Exception as e:
-            print(f"Failed to load simple assets: {e}")
-            self.assets_loaded = False
-        
-        self.start_time = None
         
     def _draw_trolley(self, state, decision, time_remaining):
         if not self.assets_loaded:
@@ -254,6 +259,12 @@ class TrolleySimpleGUI:
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_q:
                     return False
+            if event.type == pygame.VIDEORESIZE:
+                # Window was resized, update dimensions and recalculate layout
+                self.window_width = event.w
+                self.window_height = event.h
+                self.screen = pygame.display.set_mode((event.w, event.h), pygame.RESIZABLE)
+                self._recalculate_layout()
         
         # Fill background
         self.screen.fill(self.COLOR_BG)
