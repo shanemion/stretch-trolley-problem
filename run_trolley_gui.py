@@ -824,16 +824,12 @@ def run_pixel_mode(args):
     """Run with Pixel Art GUI."""
     
     # Initialize logic controller (reusing existing class)
-    # Note: args.no_dry_run means dry_run = False
     controller = TrolleyGUIComplete(
         window_width=args.width,
         window_height=args.height,
-        model_path="scripts/yolov8n-pose.pt", # Hardcoded or passed from args if available? args has model_path usually?
-        # Re-checking args in parse_args... it doesn't have model_path! 
-        # Wait, run_gui.py had it, but run_trolley_gui.py didn't seem to expose it in parse_args in the snippet I saw.
-        # Let's check config.
+        model_path="scripts/yolov8n-pose.pt",
         conf_thresh=args.conf,
-        rotate_90_clockwise=True, # Assuming defaults from main
+        rotate_90_clockwise=True,
         use_robot=not args.no_robot,
         dry_run=not args.no_dry_run,
     )
@@ -842,26 +838,35 @@ def run_pixel_mode(args):
     view = TrolleyPixelGUI(args.width, args.height)
     
     print("[GUI] Starting Pixel Mode...")
+    print("[GUI] Controls: 's' = start, 'x' = stop, 'r' = restart, 'q' = quit")
     running = True
     
     try:
         while running:
-            # 1. Update Logic
+            # 1. Update Logic - scan for people
             controller._update_scan()
+            
+            # 2. CRITICAL: Update counts and confidences from detections
+            controller.left_count = len(controller.left_detections)
+            controller.right_count = len(controller.right_detections)
+            controller.left_confidences = [d.conf for d in controller.left_detections]
+            controller.right_confidences = [d.conf for d in controller.right_detections]
+            
+            # 3. Update trolley state machine
             controller._update_trolley_state()
             
             # Get data for rendering
             current_frame = controller._left_frame if controller.current_scan_side == "LEFT" else controller._right_frame
             if current_frame is None:
-                 current_frame = controller._get_frame()
+                current_frame = controller._get_frame()
 
             # State mapping
             state_name = controller.trolley_state.value
             
             time_rem = 0.0
             if controller.trolley_state == TrolleyState.COUNTDOWN:
-                 elapsed = time.time() - controller.countdown_start_time
-                 time_rem = max(0, controller.COUNTDOWN_TIME - elapsed)
+                elapsed = time.time() - controller.countdown_start_time
+                time_rem = max(0, controller.COUNTDOWN_TIME - elapsed)
             
             # 2. Render
             running = view.render(
@@ -909,32 +914,42 @@ def run_simple_mode(args):
     view = TrolleySimpleGUI(args.width, args.height, fullscreen=args.fullscreen)
     
     print("[GUI] Starting Simple Mode...")
+    print("[GUI] Controls: 's' = start, 'x' = stop, 'r' = restart, 'q' = quit")
     running = True
     
     try:
         while running:
-            # 1. Update Logic
+            # 1. Update Logic - scan for people
             controller._update_scan()
+            
+            # 2. CRITICAL: Update counts and confidences from detections
+            controller.left_count = len(controller.left_detections)
+            controller.right_count = len(controller.right_detections)
+            controller.left_confidences = [d.conf for d in controller.left_detections]
+            controller.right_confidences = [d.conf for d in controller.right_detections]
+            
+            # 3. Update trolley state machine
             controller._update_trolley_state()
             
             # Get data for rendering
             left_frame = controller._left_frame
             right_frame = controller._right_frame
             
-            # Get current live frame if available
-            current_live_frame = controller._get_frame()
-            if left_frame is None:
-                left_frame = current_live_frame if controller.current_scan_side == "LEFT" else None
-            if right_frame is None:
-                right_frame = current_live_frame if controller.current_scan_side == "RIGHT" else None
+            # Get current live frame if not yet captured
+            if left_frame is None or right_frame is None:
+                current_live_frame = controller._get_frame()
+                if left_frame is None:
+                    left_frame = current_live_frame
+                if right_frame is None:
+                    right_frame = current_live_frame
 
             # State mapping
             state_name = controller.trolley_state.value
             
             time_rem = 0.0
             if controller.trolley_state == TrolleyState.COUNTDOWN:
-                 elapsed = time.time() - controller.countdown_start_time
-                 time_rem = max(0, controller.COUNTDOWN_TIME - elapsed)
+                elapsed = time.time() - controller.countdown_start_time
+                time_rem = max(0, controller.COUNTDOWN_TIME - elapsed)
             
             # Calculate confidence sums
             left_conf_sum = sum(controller.left_confidences) if controller.left_confidences else 0.0
