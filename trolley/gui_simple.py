@@ -68,72 +68,62 @@ class TrolleySimpleGUI:
         if not self.assets_loaded:
             return
 
-        # Animation State
-        # Path: Start Top-Center (small) -> Move Down -> Split L/R
+        # Animation follows the incoming track (which is centered at top)
+        # The track comes straight down from top-center, then splits
+        # Trolley stays on left track by default, only diverts to right in EXECUTING if needed
         
-        center_x = self.window_width // 2
+        # Key positions (based on track asset layout)
+        # Track enters from top-center, split point is where tracks diverge
         
-        # Y-Positions
-        start_y = 50
-        # Split point is now lower (approx 40% down the screen based on new asset)
-        split_y = int(self.window_height * 0.45) 
-        end_y = self.window_height - 100
+        # Start position: top center where the track begins
+        start_x = self.window_width // 2 + 20
+        start_y = 20
         
-        # Scales
-        start_scale = 0.1
-        split_scale = 0.5
-        end_scale = 1.0
+        # Split point: where the tracks diverge (lower on screen so trolley reaches at time=0)
+        split_x = (self.window_width // 2) - 40
+        split_y = int(self.window_height * 0.30)  # Junction at 45% height
         
-        # Calculate Progress
+        # End positions for each track
+        left_end_x = self.window_width // 2 - 250  # Left track goes to bottom-left
+        left_end_y = self.window_height - 50
+        
+        right_end_x = self.window_width - 100  # Right track curves to bottom-right
+        right_end_y = int(self.window_height * 0.90)
+        
+        # Scales (perspective: small at top, large at bottom) - reduced to 80%
+        start_scale = 0.048  # 0.06 * 0.8
+        split_scale = 0.15  # 0.30 * 0.8
+        end_scale = 0.3
+        
+        # Calculate Progress - LINEAR so trolley reaches junction at exactly time=0
         if state == "COUNTDOWN":
-            # 0.0 to 1.0 over 10s
+            # Linear progress 0.0 to 1.0 over 10s
+            # At time_remaining=10, progress=0. At time_remaining=0, progress=1.0
             progress = max(0.0, min(1.0, (10.0 - time_remaining) / 10.0))
         elif state in ["DECIDING", "EXECUTING"]:
-            progress = 1.0 # Past the countdown, start splitting
+            progress = 1.0
         else:
             progress = 0.0
-            
-        # Draw Phase 1: Approaching Split (Straight Down)
-        # We want the trolley to reach the split point roughly when countdown ends?
-        # Or maybe it moves continuously. Let's say countdown brings it to the split point.
         
-        # Interpolate Y
+        # Phase 1: Following the main track from start to junction
+        # Track goes diagonally down and to the left (not straight down)
+        cur_x = start_x + (split_x - start_x) * progress
         cur_y = start_y + (split_y - start_y) * progress
         cur_scale = start_scale + (split_scale - start_scale) * progress
-        cur_x = center_x
         
-        # Draw Phase 2: Execution (Past Split)
+        # Phase 2: Past the split point (EXECUTING state)
         if state == "EXECUTING":
-            # Animate past split
-            # We don't have a precise execution timer passed in, so we simulate movement
-            # In a real game loop we'd track state_time.
-            # Hack: Just push it to end for visual feedback
-            
-            # TODO: Add execution timer to render args if we want smooth animation here
-            # For now, put it further down the track
-            
-            cur_y = split_y + 150 # Moved past split (further down for visual confirmation)
-            cur_scale = 0.7
-            
-            # Straight Left vs Curved Right
+            # Determine which track to take
             if decision == "DIVERT_RIGHT":
-                # Curve Right
-                offset_x = 200 # Move right
-                cur_x += offset_x
+                # Divert to right track (curved path)
+                cur_x = split_x + (right_end_x - split_x) * 0.5
+                cur_y = split_y + (right_end_y - split_y) * 0.4
+                cur_scale = split_scale + (end_scale - split_scale) * 0.4
             else:
-                # Straight Left (Diagonal)
-                # Left track goes from Center Top to Bottom Left
-                # Start X = Center, End X = Left Border?
-                # Actually, the track image dictates the path.
-                # Left track is a straight diagonal line.
-                # So we simply interpolate X based on Y progress further.
-                # Current logic was centered until split.
-                # Let's say loop moves further along that vector.
-                
-                # Assume straight line equation continuation
-                # Slope approx: (BottomLeftX - TopCenterX) / Height
-                # Let's approximate visually based on scale
-                cur_x -= 150 # Move left along the diagonal
+                # Stay on left track (continue diagonal)
+                cur_x = split_x + (left_end_x - split_x) * 0.5
+                cur_y = split_y + (left_end_y - split_y) * 0.4
+                cur_scale = split_scale + (end_scale - split_scale) * 0.4
         
         # Draw Trolley
         w = int(self.trolley_base_w * cur_scale)
