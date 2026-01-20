@@ -4,7 +4,51 @@ Quick reference for all testing commands and options.
 
 ---
 
-## GUI Visualization (with Head Scanning)
+## Complete Trolley GUI (Recommended)
+
+The integrated GUI with countdown timer, decision logic, and interactive controls.
+
+### Launch Complete System (Dry-Run, Safe)
+```bash
+python run_trolley_gui.py
+```
+- Interactive START/STOP/RESTART buttons
+- 10-second countdown timer
+- Camera scanning (left/right views)
+- Automatic decision based on detected people
+- **DRY-RUN**: Lever action is simulated (safe)
+
+### Complete System with Real Lever Action
+```bash
+python run_trolley_gui.py --no-dry-run
+```
+- **WARNING**: Robot WILL pull lever if decision is DIVERT
+- Ensure arm path is clear
+- Have hand on runstop
+
+### Complete System without Robot (Static View)
+```bash
+python run_trolley_gui.py --no-robot
+```
+- No head scanning (camera stays centered)
+- Splits by nose position in frame
+- Lever action disabled
+
+### Complete GUI Options
+```bash
+python run_trolley_gui.py --width 1920 --height 1080  # Larger window
+python run_trolley_gui.py --conf 0.5                   # Higher confidence threshold
+python run_trolley_gui.py --no-robot                   # Static view, no robot
+python run_trolley_gui.py --no-dry-run                 # Enable real lever action
+```
+
+### Controls
+- **Mouse**: Click START/STOP/RESTART buttons
+- **Keyboard**: 's' start, 'x' stop, 'r' restart, 'q' quit
+
+---
+
+## Detection-Only GUI (No Decision Logic)
 
 ### Launch Detection GUI with Head Scanning
 ```bash
@@ -35,7 +79,7 @@ python run_gui.py --no-robot                   # Disable head scanning
 
 ---
 
-## Basic Commands
+## CLI-Only Commands (No GUI)
 
 ### Dry-Run with Mock Perception (Safest - No Hardware)
 ```bash

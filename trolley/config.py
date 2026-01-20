@@ -38,3 +38,10 @@ MAX_STEPS = 20  # Maximum steps for gentle close
 # Safety defaults
 DRY_RUN = True  # Default to safe mode (no hardware movement)
 USE_MOCK_PERCEPTION = True  # Default to terminal input (for development)
+USE_SCANNING = False  # Default to static camera (no head movement)
+
+# Scanning parameters (head pan positions in radians)
+PAN_LEFT = 0.4      # ~23 degrees left
+PAN_RIGHT = -0.4    # ~23 degrees right
+PAN_CENTER = 0.0    # Center position
+SCAN_SETTLE_TIME = 0.3  # Time to wait after head movement (seconds)
