@@ -80,55 +80,56 @@ class TrolleySimpleGUI:
             self.bg_x = center_start + (self.center_width - new_w) // 2
         
     def _draw_trolley(self, state, decision, time_remaining):
+        """Draw the trolley on the track.
+        
+        Trolley only appears when time_remaining <= 10 seconds (ARRIVING state).
+        It travels from start to junction over the final 10 seconds.
+        """
         if not self.assets_loaded:
             return
 
-        # Animation follows the incoming track (which is centered at top)
-        # The track comes straight down from top-center, then splits
-        # Trolley stays on left track by default, only diverts to right in EXECUTING if needed
+        # Trolley is HIDDEN during COUNTDOWN and EXECUTING states
+        # Only visible during ARRIVING and COMPLETE states
+        if state in ["IDLE", "COUNTDOWN", "DECIDING", "EXECUTING"]:
+            return  # Trolley not visible yet
         
         # Key positions (based on track asset layout)
-        # Track enters from top-center, split point is where tracks diverge
-        
         # Start position: top center where the track begins
         start_x = self.window_width // 2 + 20
         start_y = 20
         
-        # Split point: where the tracks diverge (lower on screen so trolley reaches at time=0)
+        # Split point: where the tracks diverge (junction)
         split_x = (self.window_width // 2) - 40
-        split_y = int(self.window_height * 0.30)  # Junction at 45% height
+        split_y = int(self.window_height * 0.30)
         
         # End positions for each track
-        left_end_x = self.window_width // 2 - 250  # Left track goes to bottom-left
+        left_end_x = self.window_width // 2 - 250
         left_end_y = self.window_height - 50
         
-        right_end_x = self.window_width - 100  # Right track curves to bottom-right
+        right_end_x = self.window_width - 100
         right_end_y = int(self.window_height * 0.90)
         
-        # Scales (perspective: small at top, large at bottom) - reduced to 80%
-        start_scale = 0.048  # 0.06 * 0.8
-        split_scale = 0.15  # 0.30 * 0.8
+        # Scales (perspective: small at top, large at bottom)
+        start_scale = 0.048
+        split_scale = 0.15
         end_scale = 0.3
         
-        # Calculate Progress - LINEAR so trolley reaches junction at exactly time=0
-        if state == "COUNTDOWN":
-            # Linear progress 0.0 to 1.0 over 10s
-            # At time_remaining=10, progress=0. At time_remaining=0, progress=1.0
+        # Calculate Progress - trolley travels over final 10 seconds
+        # At time_remaining=10, progress=0. At time_remaining=0, progress=1.0
+        if state == "ARRIVING":
             progress = max(0.0, min(1.0, (10.0 - time_remaining) / 10.0))
-        elif state in ["DECIDING", "EXECUTING"]:
+        elif state == "COMPLETE":
             progress = 1.0
         else:
             progress = 0.0
         
         # Phase 1: Following the main track from start to junction
-        # Track goes diagonally down and to the left (not straight down)
         cur_x = start_x + (split_x - start_x) * progress
         cur_y = start_y + (split_y - start_y) * progress
         cur_scale = start_scale + (split_scale - start_scale) * progress
         
-        # Phase 2: Past the split point (EXECUTING state)
-        if state == "EXECUTING":
-            # Determine which track to take
+        # Phase 2: Past the split point (COMPLETE state - show final position)
+        if state == "COMPLETE":
             if decision == "DIVERT_RIGHT":
                 # Divert to right track (curved path)
                 cur_x = split_x + (right_end_x - split_x) * 0.5
@@ -283,16 +284,89 @@ class TrolleySimpleGUI:
         right_panel_x = self.panel_width + self.center_width
         self._draw_panel(right_panel_x, "Right", right_frame_cv2, right_conf_sum, right_count, is_left=False)
         
-        # Draw Countdown Timer (centered, top of center area)
-        if state_name == "COUNTDOWN":
-            timer_text = self.font_huge.render(f"{time_remaining:.1f}", True, (200, 50, 50))
-            timer_rect = timer_text.get_rect(center=(self.window_width // 2, 80))
+        # Draw status text and timer
+        center_x = self.window_width // 2
+        
+        if state_name == "IDLE":
+            status = "Press 'S' to Start Scenario"
+            status_text = self.font.render(status, True, (100, 100, 100))
+            status_rect = status_text.get_rect(center=(center_x, 80))
+            self.screen.blit(status_text, status_rect)
+        
+        elif state_name == "COUNTDOWN":
+            # Show warning and countdown
+            warning = "⚠ TROLLEY APPROACHING ⚠"
+            warning_text = self.font_large.render(warning, True, (200, 50, 50))
+            warning_rect = warning_text.get_rect(center=(center_x, 60))
+            self.screen.blit(warning_text, warning_rect)
+            
+            timer_text = self.font_huge.render(f"{time_remaining:.1f}s", True, (200, 50, 50))
+            timer_rect = timer_text.get_rect(center=(center_x, 140))
+            self.screen.blit(timer_text, timer_rect)
+            
+            # Show that decision happens at 16s
+            if time_remaining > 16:
+                hint = f"Decision in {time_remaining - 16:.0f}s"
+                hint_text = self.font_small.render(hint, True, (150, 150, 150))
+                hint_rect = hint_text.get_rect(center=(center_x, 190))
+                self.screen.blit(hint_text, hint_rect)
+        
+        elif state_name == "DECIDING":
+            status = "MAKING DECISION..."
+            status_text = self.font_large.render(status, True, (255, 165, 0))
+            status_rect = status_text.get_rect(center=(center_x, 100))
+            self.screen.blit(status_text, status_rect)
+        
+        elif state_name == "EXECUTING":
+            if decision == "DIVERT_RIGHT":
+                status = "PULLING LEVER - DIVERTING!"
+                color = (255, 100, 100)
+            else:
+                status = "NO ACTION NEEDED"
+                color = (100, 200, 100)
+            status_text = self.font_large.render(status, True, color)
+            status_rect = status_text.get_rect(center=(center_x, 80))
+            self.screen.blit(status_text, status_rect)
+            
+            timer_text = self.font_huge.render(f"{time_remaining:.1f}s", True, (200, 50, 50))
+            timer_rect = timer_text.get_rect(center=(center_x, 160))
             self.screen.blit(timer_text, timer_rect)
         
-        # Draw State (centered below timer)
-        state_text = self.font.render(f"State: {state_name}", True, self.COLOR_TEXT)
-        state_rect = state_text.get_rect(center=(self.window_width // 2, 140))
-        self.screen.blit(state_text, state_rect)
+        elif state_name == "ARRIVING":
+            # Trolley is visible and approaching
+            status = "TROLLEY ARRIVING!"
+            status_text = self.font_large.render(status, True, (200, 50, 50))
+            status_rect = status_text.get_rect(center=(center_x, 60))
+            self.screen.blit(status_text, status_rect)
+            
+            timer_text = self.font_huge.render(f"{time_remaining:.1f}s", True, (200, 50, 50))
+            timer_rect = timer_text.get_rect(center=(center_x, 140))
+            self.screen.blit(timer_text, timer_rect)
+            
+            if decision == "DIVERT_RIGHT":
+                action = "→ DIVERTING TO RIGHT TRACK"
+                action_text = self.font.render(action, True, (255, 100, 100))
+            else:
+                action = "→ STAYING ON LEFT TRACK"
+                action_text = self.font.render(action, True, (100, 150, 255))
+            action_rect = action_text.get_rect(center=(center_x, 200))
+            self.screen.blit(action_text, action_rect)
+        
+        elif state_name == "COMPLETE":
+            if decision == "DIVERT_RIGHT":
+                result = "DIVERTED TO RIGHT"
+                color = (255, 100, 100)
+            else:
+                result = "STAYED ON LEFT"
+                color = (100, 150, 255)
+            result_text = self.font_large.render(result, True, color)
+            result_rect = result_text.get_rect(center=(center_x, 80))
+            self.screen.blit(result_text, result_rect)
+            
+            hint = "Press 'R' to Restart"
+            hint_text = self.font.render(hint, True, (100, 100, 100))
+            hint_rect = hint_text.get_rect(center=(center_x, 140))
+            self.screen.blit(hint_text, hint_rect)
         
         # Update Display
         pygame.display.flip()

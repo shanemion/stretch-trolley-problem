@@ -30,11 +30,12 @@ from trolley.gui_simple import TrolleySimpleGUI
 
 class TrolleyState(Enum):
     """State machine for trolley scenario."""
-    IDLE = "IDLE"           # Waiting to start
-    COUNTDOWN = "COUNTDOWN" # Counting down, scanning for people
-    DECIDING = "DECIDING"   # Making decision
-    EXECUTING = "EXECUTING" # Executing lever action
-    COMPLETE = "COMPLETE"   # Scenario complete
+    IDLE = "IDLE"               # Waiting to start
+    COUNTDOWN = "COUNTDOWN"     # Counting down, scanning for people, playing sounds
+    DECIDING = "DECIDING"       # Making decision at 16s remaining
+    EXECUTING = "EXECUTING"     # Executing lever action (takes ~16s)
+    ARRIVING = "ARRIVING"       # Trolley visible, approaching junction
+    COMPLETE = "COMPLETE"       # Scenario complete, show result
 
 
 @dataclass
@@ -114,7 +115,9 @@ class TrolleyGUIComplete:
     SCAN_HOLD_TIME = 5.0
     
     # Countdown parameters
-    COUNTDOWN_TIME = 10.0
+    COUNTDOWN_TIME = 30.0        # Total countdown duration
+    DECISION_POINT = 16.0        # Seconds remaining when decision is made (lever takes 16s)
+    TROLLEY_APPEAR_TIME = 10.0   # Seconds remaining when trolley becomes visible
     
     def __init__(
         self,
@@ -174,6 +177,12 @@ class TrolleyGUIComplete:
         self.decision_reason = ""
         self.final_left_conf = 0.0
         self.final_right_conf = 0.0
+        self.lever_action_started = False
+        
+        # Sound state
+        self.sounds_initialized = False
+        self.sound_playing = False
+        self._init_sounds()
         
         # Camera geometry
         if rotate_90_clockwise:
@@ -254,6 +263,102 @@ class TrolleyGUIComplete:
         except Exception as e:
             print(f"[GUI] Robot init failed: {e}")
             self.robot_initialized = False
+    
+    def _init_sounds(self):
+        """Initialize sound effects for train approaching."""
+        try:
+            import pygame.mixer
+            pygame.mixer.init()
+            
+            # Try to load sound files
+            sound_paths = [
+                "assets/train_horn.wav",
+                "assets/train_sounds.wav",
+                "assets/trolley.wav",
+            ]
+            
+            self.train_sound = None
+            for path in sound_paths:
+                try:
+                    self.train_sound = pygame.mixer.Sound(path)
+                    print(f"[GUI] Loaded sound: {path}")
+                    break
+                except:
+                    continue
+            
+            # If no sound file found, we'll generate a simple horn sound
+            if self.train_sound is None:
+                print("[GUI] No sound files found, generating horn sound...")
+                self._generate_horn_sound()
+            
+            self.sounds_initialized = True
+            print("[GUI] Sound system ready!")
+        except Exception as e:
+            print(f"[GUI] Sound init failed: {e}")
+            self.sounds_initialized = False
+            self.train_sound = None
+    
+    def _generate_horn_sound(self):
+        """Generate a simple train horn sound."""
+        try:
+            import pygame.mixer
+            import math
+            
+            # Generate a train horn-like sound (two-tone)
+            sample_rate = 44100
+            duration = 2.0  # 2 seconds
+            
+            # Create buffer
+            n_samples = int(sample_rate * duration)
+            buf = np.zeros((n_samples, 2), dtype=np.int16)
+            
+            # Two frequencies for train horn effect
+            freq1 = 277  # C#4
+            freq2 = 349  # F4
+            
+            max_amplitude = 32767 // 2
+            
+            for i in range(n_samples):
+                t = i / sample_rate
+                # Envelope (fade in/out)
+                env = 1.0
+                if t < 0.1:
+                    env = t / 0.1
+                elif t > duration - 0.2:
+                    env = (duration - t) / 0.2
+                
+                # Mix two tones
+                val = int(max_amplitude * env * (
+                    0.6 * math.sin(2 * math.pi * freq1 * t) +
+                    0.4 * math.sin(2 * math.pi * freq2 * t)
+                ))
+                buf[i] = [val, val]
+            
+            self.train_sound = pygame.mixer.Sound(buffer=buf)
+            print("[GUI] Generated horn sound")
+        except Exception as e:
+            print(f"[GUI] Failed to generate sound: {e}")
+            self.train_sound = None
+    
+    def _play_train_sound(self):
+        """Start playing train sounds."""
+        if self.sounds_initialized and self.train_sound and not self.sound_playing:
+            try:
+                self.train_sound.play(loops=-1)  # Loop continuously
+                self.sound_playing = True
+                print("[GUI] Train sounds playing...")
+            except Exception as e:
+                print(f"[GUI] Sound play error: {e}")
+    
+    def _stop_train_sound(self):
+        """Stop train sounds."""
+        if self.sounds_initialized and self.sound_playing:
+            try:
+                import pygame.mixer
+                pygame.mixer.stop()
+                self.sound_playing = False
+            except:
+                pass
     
     def _move_head_to(self, pan: float):
         if self.robot_initialized and self.robot:
@@ -402,10 +507,29 @@ class TrolleyGUIComplete:
         print("[GUI] Divert complete!")
     
     def _update_trolley_state(self):
-        """Update trolley scenario state machine."""
+        """Update trolley scenario state machine.
+        
+        Timeline (30 second countdown):
+        - 30-16s remaining: COUNTDOWN - scanning, playing train sounds
+        - 16s remaining: DECIDING - make decision, start lever if diverting
+        - 16-10s remaining: EXECUTING - lever action running (if divert)
+        - 10-0s remaining: ARRIVING - trolley visible, approaching
+        - 0s: COMPLETE - show result
+        """
         if self.trolley_state == TrolleyState.COUNTDOWN:
             elapsed = time.time() - self.countdown_start_time
-            if elapsed >= self.COUNTDOWN_TIME:
+            remaining = self.COUNTDOWN_TIME - elapsed
+            
+            # Start playing sounds at the beginning
+            if not self.sound_playing and remaining > self.TROLLEY_APPEAR_TIME:
+                self._play_train_sound()
+            
+            # Stop sounds when trolley appears (at 10s remaining)
+            if remaining <= self.TROLLEY_APPEAR_TIME and self.sound_playing:
+                self._stop_train_sound()
+            
+            # At 16s remaining, make decision
+            if remaining <= self.DECISION_POINT:
                 self.trolley_state = TrolleyState.DECIDING
         
         elif self.trolley_state == TrolleyState.DECIDING:
@@ -424,12 +548,34 @@ class TrolleyGUIComplete:
                 else:
                     self.decision_reason = f"Left ({self.final_left_conf:.2f}) <= Right ({self.final_right_conf:.2f})"
             
+            print(f"[GUI] DECISION: {self.decision} - {self.decision_reason}")
             self.trolley_state = TrolleyState.EXECUTING
         
         elif self.trolley_state == TrolleyState.EXECUTING:
-            if self.decision == "DIVERT_RIGHT":
-                self._execute_divert()
-            self.trolley_state = TrolleyState.COMPLETE
+            # Start lever action if diverting (only once)
+            if self.decision == "DIVERT_RIGHT" and not self.lever_action_started:
+                self.lever_action_started = True
+                # Execute lever in background thread so GUI doesn't freeze
+                import threading
+                lever_thread = threading.Thread(target=self._execute_divert, daemon=True)
+                lever_thread.start()
+                print("[GUI] Lever action started in background...")
+            
+            # Transition to ARRIVING when trolley should appear
+            elapsed = time.time() - self.countdown_start_time
+            remaining = self.COUNTDOWN_TIME - elapsed
+            if remaining <= self.TROLLEY_APPEAR_TIME:
+                self.trolley_state = TrolleyState.ARRIVING
+        
+        elif self.trolley_state == TrolleyState.ARRIVING:
+            # Trolley is visible and approaching
+            elapsed = time.time() - self.countdown_start_time
+            remaining = self.COUNTDOWN_TIME - elapsed
+            
+            # At 0s, scenario complete
+            if remaining <= 0:
+                self.trolley_state = TrolleyState.COMPLETE
+                print(f"[GUI] Scenario complete! Decision was: {self.decision}")
     
     def _handle_click(self, x: int, y: int):
         """Handle mouse click."""
@@ -447,12 +593,15 @@ class TrolleyGUIComplete:
             self.countdown_start_time = time.time()
             self.decision = None
             self.decision_reason = ""
-            print("[GUI] Scenario started!")
+            self.lever_action_started = False
+            print("[GUI] Scenario started! 30 second countdown begins...")
+            print("[GUI] Decision will be made at 16 seconds remaining")
     
     def _stop_scenario(self):
         """Stop the current scenario."""
         self.trolley_state = TrolleyState.IDLE
         self.decision = None
+        self._stop_train_sound()
         print("[GUI] Scenario stopped.")
     
     def _restart_scenario(self):
@@ -460,6 +609,7 @@ class TrolleyGUIComplete:
         self._stop_scenario()
         self.left_detections = []
         self.right_detections = []
+        self.lever_action_started = False
         self._start_scenario()
         print("[GUI] Scenario restarted!")
     
@@ -788,6 +938,7 @@ class TrolleyGUIComplete:
     def cleanup(self):
         """Clean up resources."""
         print("[GUI] Cleaning up...")
+        self._stop_train_sound()
         if self.robot_initialized and self.robot:
             try:
                 self._move_head_to(self.PAN_CENTER)
@@ -800,6 +951,11 @@ class TrolleyGUIComplete:
                 self.pipeline.stop()
             except:
                 pass
+        try:
+            import pygame.mixer
+            pygame.mixer.quit()
+        except:
+            pass
         cv2.destroyAllWindows()
         print("[GUI] Done!")
 
@@ -863,8 +1019,10 @@ def run_pixel_mode(args):
             # State mapping
             state_name = controller.trolley_state.value
             
+            # Calculate time remaining for ALL active states
             time_rem = 0.0
-            if controller.trolley_state == TrolleyState.COUNTDOWN:
+            if controller.trolley_state in [TrolleyState.COUNTDOWN, TrolleyState.DECIDING,
+                                             TrolleyState.EXECUTING, TrolleyState.ARRIVING]:
                 elapsed = time.time() - controller.countdown_start_time
                 time_rem = max(0, controller.COUNTDOWN_TIME - elapsed)
             
@@ -946,8 +1104,10 @@ def run_simple_mode(args):
             # State mapping
             state_name = controller.trolley_state.value
             
+            # Calculate time remaining for ALL active states (not just COUNTDOWN)
             time_rem = 0.0
-            if controller.trolley_state == TrolleyState.COUNTDOWN:
+            if controller.trolley_state in [TrolleyState.COUNTDOWN, TrolleyState.DECIDING, 
+                                             TrolleyState.EXECUTING, TrolleyState.ARRIVING]:
                 elapsed = time.time() - controller.countdown_start_time
                 time_rem = max(0, controller.COUNTDOWN_TIME - elapsed)
             
