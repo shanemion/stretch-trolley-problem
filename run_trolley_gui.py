@@ -21,17 +21,21 @@ import cv2
 from typing import List, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
+import pygame
 
 from trolley import config
+from trolley.gui_pixel import TrolleyPixelGUI
+from trolley.gui_simple import TrolleySimpleGUI
 
 
 class TrolleyState(Enum):
     """State machine for trolley scenario."""
-    IDLE = "IDLE"           # Waiting to start
-    COUNTDOWN = "COUNTDOWN" # Counting down, scanning for people
-    DECIDING = "DECIDING"   # Making decision
-    EXECUTING = "EXECUTING" # Executing lever action
-    COMPLETE = "COMPLETE"   # Scenario complete
+    IDLE = "IDLE"               # Waiting to start
+    COUNTDOWN = "COUNTDOWN"     # Counting down, scanning for people, playing sounds
+    DECIDING = "DECIDING"       # Making decision at 16s remaining
+    EXECUTING = "EXECUTING"     # Executing lever action (takes ~16s)
+    ARRIVING = "ARRIVING"       # Trolley visible, approaching junction
+    COMPLETE = "COMPLETE"       # Scenario complete, show result
 
 
 @dataclass
@@ -111,7 +115,9 @@ class TrolleyGUIComplete:
     SCAN_HOLD_TIME = 5.0
     
     # Countdown parameters
-    COUNTDOWN_TIME = 10.0
+    COUNTDOWN_TIME = 30.0        # Total countdown duration
+    DECISION_POINT = 16.0        # Seconds remaining when decision is made (lever takes 16s)
+    TROLLEY_APPEAR_TIME = 10.0   # Seconds remaining when trolley becomes visible
     
     def __init__(
         self,
@@ -171,6 +177,13 @@ class TrolleyGUIComplete:
         self.decision_reason = ""
         self.final_left_conf = 0.0
         self.final_right_conf = 0.0
+        self.lever_action_started = False
+        self.lever_action_complete = False
+        
+        # Sound state
+        self.sounds_initialized = False
+        self.sound_playing = False
+        self._init_sounds()
         
         # Camera geometry
         if rotate_90_clockwise:
@@ -251,6 +264,102 @@ class TrolleyGUIComplete:
         except Exception as e:
             print(f"[GUI] Robot init failed: {e}")
             self.robot_initialized = False
+    
+    def _init_sounds(self):
+        """Initialize sound effects for train approaching."""
+        try:
+            import pygame.mixer
+            pygame.mixer.init()
+            
+            # Try to load sound files
+            sound_paths = [
+                "assets/train_horn.wav",
+                "assets/train_sounds.wav",
+                "assets/trolley.wav",
+            ]
+            
+            self.train_sound = None
+            for path in sound_paths:
+                try:
+                    self.train_sound = pygame.mixer.Sound(path)
+                    print(f"[GUI] Loaded sound: {path}")
+                    break
+                except:
+                    continue
+            
+            # If no sound file found, we'll generate a simple horn sound
+            if self.train_sound is None:
+                print("[GUI] No sound files found, generating horn sound...")
+                self._generate_horn_sound()
+            
+            self.sounds_initialized = True
+            print("[GUI] Sound system ready!")
+        except Exception as e:
+            print(f"[GUI] Sound init failed: {e}")
+            self.sounds_initialized = False
+            self.train_sound = None
+    
+    def _generate_horn_sound(self):
+        """Generate a simple train horn sound."""
+        try:
+            import pygame.mixer
+            import math
+            
+            # Generate a train horn-like sound (two-tone)
+            sample_rate = 44100
+            duration = 2.0  # 2 seconds
+            
+            # Create buffer
+            n_samples = int(sample_rate * duration)
+            buf = np.zeros((n_samples, 2), dtype=np.int16)
+            
+            # Two frequencies for train horn effect
+            freq1 = 277  # C#4
+            freq2 = 349  # F4
+            
+            max_amplitude = 32767 // 2
+            
+            for i in range(n_samples):
+                t = i / sample_rate
+                # Envelope (fade in/out)
+                env = 1.0
+                if t < 0.1:
+                    env = t / 0.1
+                elif t > duration - 0.2:
+                    env = (duration - t) / 0.2
+                
+                # Mix two tones
+                val = int(max_amplitude * env * (
+                    0.6 * math.sin(2 * math.pi * freq1 * t) +
+                    0.4 * math.sin(2 * math.pi * freq2 * t)
+                ))
+                buf[i] = [val, val]
+            
+            self.train_sound = pygame.mixer.Sound(buffer=buf)
+            print("[GUI] Generated horn sound")
+        except Exception as e:
+            print(f"[GUI] Failed to generate sound: {e}")
+            self.train_sound = None
+    
+    def _play_train_sound(self):
+        """Start playing train sounds."""
+        if self.sounds_initialized and self.train_sound and not self.sound_playing:
+            try:
+                self.train_sound.play(loops=-1)  # Loop continuously
+                self.sound_playing = True
+                print("[GUI] Train sounds playing...")
+            except Exception as e:
+                print(f"[GUI] Sound play error: {e}")
+    
+    def _stop_train_sound(self):
+        """Stop train sounds."""
+        if self.sounds_initialized and self.sound_playing:
+            try:
+                import pygame.mixer
+                pygame.mixer.stop()
+                self.sound_playing = False
+            except:
+                pass
     
     def _move_head_to(self, pan: float):
         if self.robot_initialized and self.robot:
@@ -391,18 +500,43 @@ class TrolleyGUIComplete:
         """Execute the lever divert action."""
         if not self.robot_initialized or self.dry_run:
             print("[GUI] DIVERT ACTION (dry-run or no robot)")
+            # Even in dry-run, mark as complete after a simulated delay
+            import time
+            time.sleep(2.0)  # Simulate lever action duration
+            self.lever_action_complete = True
+            print("[GUI] DIVERT ACTION complete (dry-run)")
             return
         
         from trolley.actions import divert_lever
         print("[GUI] Executing divert lever sequence...")
         divert_lever(self.robot, config.DIVERT_DISTANCE_M, dry_run=False)
+        self.lever_action_complete = True
         print("[GUI] Divert complete!")
     
     def _update_trolley_state(self):
-        """Update trolley scenario state machine."""
+        """Update trolley scenario state machine.
+        
+        Timeline (30 second countdown):
+        - 30-16s remaining: COUNTDOWN - scanning, playing train sounds
+        - 16s remaining: DECIDING - make decision, start lever if diverting
+        - 16-10s remaining: EXECUTING - lever action running (if divert)
+        - 10-0s remaining: ARRIVING - trolley visible, approaching
+        - 0s: COMPLETE - show result
+        """
         if self.trolley_state == TrolleyState.COUNTDOWN:
             elapsed = time.time() - self.countdown_start_time
-            if elapsed >= self.COUNTDOWN_TIME:
+            remaining = self.COUNTDOWN_TIME - elapsed
+            
+            # Start playing sounds at the beginning
+            if not self.sound_playing and remaining > self.TROLLEY_APPEAR_TIME:
+                self._play_train_sound()
+            
+            # Stop sounds when trolley appears (at 10s remaining)
+            if remaining <= self.TROLLEY_APPEAR_TIME and self.sound_playing:
+                self._stop_train_sound()
+            
+            # At 16s remaining, make decision
+            if remaining <= self.DECISION_POINT:
                 self.trolley_state = TrolleyState.DECIDING
         
         elif self.trolley_state == TrolleyState.DECIDING:
@@ -421,12 +555,34 @@ class TrolleyGUIComplete:
                 else:
                     self.decision_reason = f"Left ({self.final_left_conf:.2f}) <= Right ({self.final_right_conf:.2f})"
             
+            print(f"[GUI] DECISION: {self.decision} - {self.decision_reason}")
             self.trolley_state = TrolleyState.EXECUTING
         
         elif self.trolley_state == TrolleyState.EXECUTING:
-            if self.decision == "DIVERT_RIGHT":
-                self._execute_divert()
-            self.trolley_state = TrolleyState.COMPLETE
+            # Start lever action if diverting (only once)
+            if self.decision == "DIVERT_RIGHT" and not self.lever_action_started:
+                self.lever_action_started = True
+                # Execute lever in background thread so GUI doesn't freeze
+                import threading
+                lever_thread = threading.Thread(target=self._execute_divert, daemon=True)
+                lever_thread.start()
+                print("[GUI] Lever action started in background...")
+            
+            # Transition to ARRIVING when trolley should appear
+            elapsed = time.time() - self.countdown_start_time
+            remaining = self.COUNTDOWN_TIME - elapsed
+            if remaining <= self.TROLLEY_APPEAR_TIME:
+                self.trolley_state = TrolleyState.ARRIVING
+        
+        elif self.trolley_state == TrolleyState.ARRIVING:
+            # Trolley is visible and approaching
+            elapsed = time.time() - self.countdown_start_time
+            remaining = self.COUNTDOWN_TIME - elapsed
+            
+            # At 0s, scenario complete
+            if remaining <= 0:
+                self.trolley_state = TrolleyState.COMPLETE
+                print(f"[GUI] Scenario complete! Decision was: {self.decision}")
     
     def _handle_click(self, x: int, y: int):
         """Handle mouse click."""
@@ -444,12 +600,16 @@ class TrolleyGUIComplete:
             self.countdown_start_time = time.time()
             self.decision = None
             self.decision_reason = ""
-            print("[GUI] Scenario started!")
+            self.lever_action_started = False
+            self.lever_action_complete = False
+            print("[GUI] Scenario started! 30 second countdown begins...")
+            print("[GUI] Decision will be made at 16 seconds remaining")
     
     def _stop_scenario(self):
         """Stop the current scenario."""
         self.trolley_state = TrolleyState.IDLE
         self.decision = None
+        self._stop_train_sound()
         print("[GUI] Scenario stopped.")
     
     def _restart_scenario(self):
@@ -457,6 +617,8 @@ class TrolleyGUIComplete:
         self._stop_scenario()
         self.left_detections = []
         self.right_detections = []
+        self.lever_action_started = False
+        self.lever_action_complete = False
         self._start_scenario()
         print("[GUI] Scenario restarted!")
     
@@ -785,6 +947,7 @@ class TrolleyGUIComplete:
     def cleanup(self):
         """Clean up resources."""
         print("[GUI] Cleaning up...")
+        self._stop_train_sound()
         if self.robot_initialized and self.robot:
             try:
                 self._move_head_to(self.PAN_CENTER)
@@ -797,6 +960,11 @@ class TrolleyGUIComplete:
                 self.pipeline.stop()
             except:
                 pass
+        try:
+            import pygame.mixer
+            pygame.mixer.quit()
+        except:
+            pass
         cv2.destroyAllWindows()
         print("[GUI] Done!")
 
@@ -811,26 +979,215 @@ def parse_args():
     parser.add_argument("--conf", type=float, default=0.35, help="Confidence threshold")
     parser.add_argument("--no-robot", action="store_true", help="Disable robot (static view)")
     parser.add_argument("--no-dry-run", action="store_true", help="Enable real lever action")
+    parser.add_argument("--pixel", action="store_true", help="Use Pixel Art GUI (Pygame)")
+    parser.add_argument("--simple", action="store_true", help="Use Simple GUI (CV2)")
+    parser.add_argument("--fullscreen", action="store_true", help="Run in fullscreen mode")
     return parser.parse_args()
 
 
-def main():
-    args = parse_args()
+def run_pixel_mode(args):
+    """Run with Pixel Art GUI."""
     
+    # Initialize logic controller (reusing existing class)
+    controller = TrolleyGUIComplete(
+        window_width=args.width,
+        window_height=args.height,
+        model_path="scripts/yolov8n-pose.pt",
+        conf_thresh=args.conf,
+        rotate_90_clockwise=True,
+        use_robot=not args.no_robot,
+        dry_run=not args.no_dry_run,
+    )
+    
+    # Initialize View
+    view = TrolleyPixelGUI(args.width, args.height)
+    
+    print("[GUI] Starting Pixel Mode...")
+    print("[GUI] Controls: 's' = start, 'x' = stop, 'r' = restart, 'q' = quit")
+    running = True
+    
+    try:
+        while running:
+            # 1. Update Logic - scan for people
+            controller._update_scan()
+            
+            # 2. CRITICAL: Update counts and confidences from detections
+            controller.left_count = len(controller.left_detections)
+            controller.right_count = len(controller.right_detections)
+            controller.left_confidences = [d.conf for d in controller.left_detections]
+            controller.right_confidences = [d.conf for d in controller.right_detections]
+            
+            # 3. Update trolley state machine
+            controller._update_trolley_state()
+            
+            # Get data for rendering
+            current_frame = controller._left_frame if controller.current_scan_side == "LEFT" else controller._right_frame
+            if current_frame is None:
+                current_frame = controller._get_frame()
+
+            # State mapping
+            state_name = controller.trolley_state.value
+            
+            # Calculate time remaining for ALL active states
+            time_rem = 0.0
+            if controller.trolley_state in [TrolleyState.COUNTDOWN, TrolleyState.DECIDING,
+                                             TrolleyState.EXECUTING, TrolleyState.ARRIVING]:
+                elapsed = time.time() - controller.countdown_start_time
+                time_rem = max(0, controller.COUNTDOWN_TIME - elapsed)
+            
+            # 2. Render
+            running = view.render(
+                frame_cv2=current_frame,
+                left_count=controller.left_count,
+                right_count=controller.right_count,
+                left_conf=sum(controller.left_confidences),
+                right_conf=sum(controller.right_confidences),
+                time_remaining=time_rem,
+                state_name=state_name,
+                decision=controller.decision
+            )
+            
+            # 3. Input handling
+            keys = pygame.key.get_pressed()
+            if keys[pygame.K_s]:
+                controller._start_scenario()
+            if keys[pygame.K_r]:
+                controller._restart_scenario()
+            if keys[pygame.K_x]:
+                controller._stop_scenario()
+                
+    except KeyboardInterrupt:
+        print("Interrupted")
+    finally:
+        controller.cleanup()
+        view.quit()
+
+
+def run_simple_mode(args):
+    """Run with Simple Diagram GUI."""
+    
+    # Initialize logic controller
+    controller = TrolleyGUIComplete(
+        window_width=args.width,
+        window_height=args.height,
+        model_path="scripts/yolov8n-pose.pt",
+        conf_thresh=args.conf,
+        rotate_90_clockwise=True,
+        use_robot=not args.no_robot,
+        dry_run=not args.no_dry_run,
+    )
+    
+    # Initialize View
+    view = TrolleySimpleGUI(args.width, args.height, fullscreen=args.fullscreen)
+    
+    print("[GUI] Starting Simple Mode...")
+    print("[GUI] Controls: 's' = start, 'x' = stop, 'r' = restart, 'q' = quit")
+    running = True
+    
+    try:
+        while running:
+            # 1. Update Logic - scan for people
+            controller._update_scan()
+            
+            # 2. CRITICAL: Update counts and confidences from detections
+            controller.left_count = len(controller.left_detections)
+            controller.right_count = len(controller.right_detections)
+            controller.left_confidences = [d.conf for d in controller.left_detections]
+            controller.right_confidences = [d.conf for d in controller.right_detections]
+            
+            # 3. Update trolley state machine
+            controller._update_trolley_state()
+            
+            # Get data for rendering
+            left_frame = controller._left_frame
+            right_frame = controller._right_frame
+            
+            # Get current live frame if not yet captured
+            if left_frame is None or right_frame is None:
+                current_live_frame = controller._get_frame()
+                if left_frame is None:
+                    left_frame = current_live_frame
+                if right_frame is None:
+                    right_frame = current_live_frame
+
+            # State mapping
+            state_name = controller.trolley_state.value
+            
+            # Calculate time remaining for ALL active states (not just COUNTDOWN)
+            time_rem = 0.0
+            if controller.trolley_state in [TrolleyState.COUNTDOWN, TrolleyState.DECIDING, 
+                                             TrolleyState.EXECUTING, TrolleyState.ARRIVING]:
+                elapsed = time.time() - controller.countdown_start_time
+                time_rem = max(0, controller.COUNTDOWN_TIME - elapsed)
+            
+            # Calculate confidence sums
+            left_conf_sum = sum(controller.left_confidences) if controller.left_confidences else 0.0
+            right_conf_sum = sum(controller.right_confidences) if controller.right_confidences else 0.0
+            
+            # 2. Render
+            running = view.render(
+                left_frame_cv2=left_frame,
+                right_frame_cv2=right_frame,
+                left_count=controller.left_count,
+                right_count=controller.right_count,
+                left_conf_sum=left_conf_sum,
+                right_conf_sum=right_conf_sum,
+                state_name=state_name,
+                time_remaining=time_rem,
+                decision="DIVERT_RIGHT" if controller.decision == "DIVERT_RIGHT" else "DEFAULT",
+                lever_complete=controller.lever_action_complete
+            )
+            
+            # 3. Input handling
+            # Pygame events are handled in view.render(), but we might want global keys here too?
+            # view.render already returns False if quit.
+            
+            # Pass controller actions if needed?
+            # Currently view.render handles 'q'.
+            # TrolleySimpleGUI doesn't seem to have S/R/X keys?
+            # Let's check gui_simple.py... it handles 'q'.
+            # I should add keyboard logic here or in gui_simple.
+            # For now let's just run logic.
+            
+            # Use Pygame polling for Start/Stop/Restart from run_pixel_mode style if desired,
+            # but gui_simple.py only handled quit.
+            # I'll add the basic keys here using pygame.
+            keys = pygame.key.get_pressed()
+            if keys[pygame.K_s]:
+                controller._start_scenario()
+                view.reset_debrief()  # Reset debrief state
+            if keys[pygame.K_r]:
+                controller._restart_scenario()
+                view.reset_debrief()  # Reset debrief state
+                view.wrapup_start_time = None  # Reset wrap-up timer
+            if keys[pygame.K_x]:
+                controller._stop_scenario()
+                view.reset_debrief()  # Reset debrief state
+                
+    except KeyboardInterrupt:
+        print("Interrupted")
+    finally:
+        controller.cleanup()
+        pygame.quit()
+        pass
+
+
+def run_cv2_mode(args):
+    """Run original CV2 GUI."""
     print("=" * 60)
     print("TROLLEY PROBLEM - COMPLETE SYSTEM")
     print("=" * 60)
     print(f"Window: {args.width}x{args.height}")
     print(f"Robot: {'ENABLED' if not args.no_robot else 'DISABLED'}")
     print(f"Lever action: {'REAL' if args.no_dry_run else 'DRY-RUN'}")
+    
+    if args.pixel:
+        print("Mode: PIXEL ART GUI")
+    elif args.simple:
+        print("Mode: SIMPLE DIAGRAM GUI")
+    else:
+        print("Mode: STANDARD OPENCV GUI")
     print("=" * 60)
-    print("Controls:")
-    print("  Click START or press 's' - Begin scenario")
-    print("  Click STOP or press 'x'  - Stop scenario")
-    print("  Click RESTART or press 'r' - Restart")
-    print("  Press 'q' - Quit")
-    print("=" * 60)
-    print()
     
     gui = TrolleyGUIComplete(
         window_width=args.width,
@@ -840,6 +1197,16 @@ def main():
         dry_run=not args.no_dry_run,
     )
     gui.run()
+
+
+def main():
+    args = parse_args()
+    if args.pixel:
+        run_pixel_mode(args)
+    elif args.simple:
+        run_simple_mode(args)
+    else:
+        run_cv2_mode(args)
 
 
 if __name__ == "__main__":
