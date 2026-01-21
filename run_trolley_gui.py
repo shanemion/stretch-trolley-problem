@@ -1155,17 +1155,20 @@ def run_simple_mode(args):
             keys = pygame.key.get_pressed()
             if keys[pygame.K_s]:
                 controller._start_scenario()
+                view.reset_debrief()  # Reset debrief state
             if keys[pygame.K_r]:
                 controller._restart_scenario()
+                view.reset_debrief()  # Reset debrief state
+                view.wrapup_start_time = None  # Reset wrap-up timer
             if keys[pygame.K_x]:
                 controller._stop_scenario()
+                view.reset_debrief()  # Reset debrief state
                 
     except KeyboardInterrupt:
         print("Interrupted")
     finally:
         controller.cleanup()
-        pygame.quit() # gui_simple doesn't have a quit method maybe? It has pygame.quit in __init__? No.
-        # view.quit() if it exists?
+        pygame.quit()
         pass
 
 

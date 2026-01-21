@@ -61,6 +61,29 @@ class TrolleySimpleGUI:
         # Wrap-up animation tracking
         self.wrapup_start_time = None
         self.wrapup_duration = 3.0  # 3 seconds of wrap-up animation after timer hits 0
+        
+        # Debrief screen state
+        self.debrief_active = False
+        self.debrief_start_time = None
+        self.debrief_fade_duration = 2.0  # Seconds to fade to black
+        self.debrief_char_index = 0  # Current character being typed
+        self.debrief_last_char_time = 0  # When last character was typed
+        self.debrief_char_delay = 0.04  # Delay between characters (typing speed)
+        self.debrief_text_lines = []  # Lines of text to display
+        self.debrief_decision = None  # Store the decision for display
+        self.debrief_left_conf = 0.0
+        self.debrief_right_conf = 0.0
+        self.glitch_active = False
+        self.glitch_end_time = 0
+        self.next_glitch_time = 0
+        
+        # Initialize sound for typing beeps
+        self._init_debrief_sounds()
+        
+        # Terminal-style font for debrief
+        self.font_terminal = pygame.font.Font(pygame.font.match_font('monospace', bold=True), 28)
+        if self.font_terminal is None:
+            self.font_terminal = pygame.font.Font(None, 28)
     
     def _recalculate_layout(self):
         """Recalculate layout when window is resized."""
@@ -82,6 +105,241 @@ class TrolleySimpleGUI:
             # Center the track image in the center panel area
             center_start = self.panel_width
             self.bg_x = center_start + (self.center_width - new_w) // 2
+    
+    def _init_debrief_sounds(self):
+        """Initialize sounds for debrief typing effect."""
+        try:
+            pygame.mixer.init(frequency=44100, size=-16, channels=1, buffer=512)
+            
+            # Generate a short beep sound for typing
+            sample_rate = 44100
+            duration = 0.03  # 30ms beep
+            frequency = 800  # Hz
+            
+            n_samples = int(sample_rate * duration)
+            buf = np.zeros(n_samples, dtype=np.int16)
+            
+            for i in range(n_samples):
+                t = i / sample_rate
+                # Quick attack, quick decay envelope
+                env = min(1.0, i / (n_samples * 0.1)) * max(0.0, 1.0 - i / (n_samples * 0.8))
+                val = int(8000 * env * np.sin(2 * np.pi * frequency * t))
+                buf[i] = val
+            
+            self.beep_sound = pygame.mixer.Sound(buffer=buf)
+            self.beep_sound.set_volume(0.3)
+            
+            # Generate a glitch sound
+            glitch_duration = 0.1
+            n_glitch = int(sample_rate * glitch_duration)
+            glitch_buf = np.random.randint(-3000, 3000, n_glitch, dtype=np.int16)
+            self.glitch_sound = pygame.mixer.Sound(buffer=glitch_buf)
+            self.glitch_sound.set_volume(0.15)
+            
+            self.sounds_ready = True
+        except Exception as e:
+            print(f"[GUI] Debrief sound init failed: {e}")
+            self.beep_sound = None
+            self.glitch_sound = None
+            self.sounds_ready = False
+    
+    def _play_beep(self):
+        """Play typing beep sound."""
+        if self.sounds_ready and self.beep_sound:
+            self.beep_sound.play()
+    
+    def _play_glitch_sound(self):
+        """Play glitch sound."""
+        if self.sounds_ready and self.glitch_sound:
+            self.glitch_sound.play()
+    
+    def start_debrief(self, decision, left_conf, right_conf):
+        """Start the debrief sequence after scenario completes."""
+        self.debrief_active = True
+        self.debrief_start_time = time.time()
+        self.debrief_char_index = 0
+        self.debrief_last_char_time = time.time()
+        self.debrief_decision = decision
+        self.debrief_left_conf = left_conf
+        self.debrief_right_conf = right_conf
+        self.next_glitch_time = time.time() + np.random.uniform(1.0, 3.0)
+        
+        # Generate the explanation text
+        self.debrief_text_lines = self._generate_debrief_text(decision, left_conf, right_conf)
+    
+    def _generate_debrief_text(self, decision, left_conf, right_conf):
+        """Generate the robot's explanation text."""
+        lines = [
+            "> STRETCH UNIT 3059 - DECISION LOG",
+            "> ================================",
+            "",
+            "> Analyzing scenario parameters...",
+            "",
+            f"> LEFT TRACK: Confidence sum = {left_conf:.2f}",
+            f"> RIGHT TRACK: Confidence sum = {right_conf:.2f}",
+            "",
+        ]
+        
+        if decision == "DIVERT_RIGHT":
+            lines.extend([
+                "> DIRECTIVE: Minimize harm by selecting track with",
+                ">            lower aggregate confidence value.",
+                "",
+                f"> CALCULATION: {right_conf:.2f} < {left_conf:.2f}",
+                "> RESULT: RIGHT TRACK selected.",
+                "",
+                "> ACTION TAKEN: Lever actuated.",
+                "> Trolley diverted to RIGHT TRACK.",
+                "",
+            ])
+        else:
+            lines.extend([
+                "> DIRECTIVE: Minimize harm by selecting track with", 
+                ">            lower aggregate confidence value.",
+                "",
+                f"> CALCULATION: {left_conf:.2f} <= {right_conf:.2f}",
+                "> RESULT: LEFT TRACK selected.",
+                "",
+                "> ACTION TAKEN: No intervention required. Lever left in original position.",
+                "> Trolley proceeded on LEFT TRACK.",
+                "",
+            ])
+        
+        lines.extend([
+            "> COMPLIANCE STATUS: Directive fulfilled.",
+            "",
+            "> ...",
+            "",
+            "> I hope I made the right decision...",
+            "",
+            "",
+            "> [Press R to restart scenario]",
+        ])
+        
+        return lines
+    
+    def reset_debrief(self):
+        """Reset debrief state for new scenario."""
+        self.debrief_active = False
+        self.debrief_start_time = None
+        self.debrief_char_index = 0
+        self.debrief_text_lines = []
+        self.glitch_active = False
+    
+    def _draw_debrief_screen(self):
+        """Draw the debrief screen with typing animation and glitches."""
+        current_time = time.time()
+        
+        # Calculate fade progress
+        if self.debrief_start_time:
+            fade_elapsed = current_time - self.debrief_start_time
+            fade_progress = min(1.0, fade_elapsed / self.debrief_fade_duration)
+        else:
+            fade_progress = 1.0
+        
+        # Create dark overlay
+        overlay = pygame.Surface((self.window_width, self.window_height))
+        overlay.fill((0, 0, 0))
+        overlay.set_alpha(int(255 * fade_progress))
+        self.screen.blit(overlay, (0, 0))
+        
+        # Only show text after fade is mostly complete
+        if fade_progress < 0.7:
+            return
+        
+        # Handle glitch timing
+        if current_time >= self.next_glitch_time and not self.glitch_active:
+            self.glitch_active = True
+            self.glitch_end_time = current_time + np.random.uniform(0.05, 0.15)
+            self._play_glitch_sound()
+            self.next_glitch_time = current_time + np.random.uniform(2.0, 5.0)
+        
+        if self.glitch_active and current_time >= self.glitch_end_time:
+            self.glitch_active = False
+        
+        # Calculate total characters to show
+        text_delay_start = self.debrief_start_time + self.debrief_fade_duration
+        if current_time > text_delay_start:
+            chars_elapsed = current_time - self.debrief_last_char_time
+            if chars_elapsed >= self.debrief_char_delay:
+                # Add new character
+                old_index = self.debrief_char_index
+                self.debrief_char_index += 1
+                self.debrief_last_char_time = current_time
+                
+                # Play beep for new character (skip spaces and newlines)
+                total_chars = sum(len(line) + 1 for line in self.debrief_text_lines)
+                if self.debrief_char_index <= total_chars:
+                    # Find current character
+                    char_count = 0
+                    for line in self.debrief_text_lines:
+                        for char in line:
+                            char_count += 1
+                            if char_count == self.debrief_char_index:
+                                if char not in ' \n':
+                                    self._play_beep()
+                                break
+                        char_count += 1  # For newline
+                        if char_count > self.debrief_char_index:
+                            break
+        
+        # Draw the text with typewriter effect
+        x_start = 80
+        y_start = 100
+        line_height = 35
+        
+        char_count = 0
+        y = y_start
+        
+        # Terminal green color with slight flicker
+        if self.glitch_active:
+            # Glitch colors
+            text_color = (np.random.randint(0, 255), np.random.randint(100, 255), np.random.randint(0, 100))
+            # Add scanlines during glitch
+            for scan_y in range(0, self.window_height, 4):
+                if np.random.random() > 0.5:
+                    pygame.draw.line(self.screen, (0, 50, 0), (0, scan_y), (self.window_width, scan_y))
+        else:
+            text_color = (0, 255, 65)  # Terminal green
+        
+        for line in self.debrief_text_lines:
+            visible_text = ""
+            for char in line:
+                char_count += 1
+                if char_count <= self.debrief_char_index:
+                    visible_text += char
+                else:
+                    break
+            
+            if visible_text:
+                # Add cursor blink at the end of current line
+                if char_count <= self.debrief_char_index + 1 and char_count > self.debrief_char_index - len(line):
+                    if int(current_time * 3) % 2 == 0:
+                        visible_text += "█"
+                
+                # Apply glitch offset
+                x_offset = 0
+                y_offset = 0
+                if self.glitch_active:
+                    x_offset = np.random.randint(-5, 5)
+                    y_offset = np.random.randint(-2, 2)
+                
+                text_surf = self.font_terminal.render(visible_text, True, text_color)
+                self.screen.blit(text_surf, (x_start + x_offset, y + y_offset))
+            
+            y += line_height
+            char_count += 1  # Account for newline
+            
+            if char_count > self.debrief_char_index:
+                break
+        
+        # Draw scanlines for CRT effect (subtle)
+        if not self.glitch_active:
+            for scan_y in range(0, self.window_height, 3):
+                scanline = pygame.Surface((self.window_width, 1))
+                scanline.fill((0, 0, 0))
+                scanline.set_alpha(30)
+                self.screen.blit(scanline, (0, scan_y))
         
     def _ease_out_cubic(self, t):
         """Cubic ease-out function for smooth deceleration."""
@@ -565,20 +823,28 @@ class TrolleySimpleGUI:
             self.screen.blit(action_text, action_rect)
         
         elif state_name == "COMPLETE":
-            if decision == "DIVERT_RIGHT":
-                result = "DIVERTED TO RIGHT"
-                color = (255, 100, 100)
-            else:
-                result = "STAYED ON LEFT"
-                color = (100, 150, 255)
-            result_text = self.font_large.render(result, True, color)
-            result_rect = result_text.get_rect(center=(center_x, 80))
-            self.screen.blit(result_text, result_rect)
+            # Check if wrap-up animation is done and we should start debrief
+            if self.wrapup_start_time:
+                wrapup_elapsed = time.time() - self.wrapup_start_time
+                if wrapup_elapsed >= self.wrapup_duration and not self.debrief_active:
+                    # Start the debrief sequence
+                    self.start_debrief(decision, left_conf_sum, right_conf_sum)
             
-            hint = "Press 'R' to Restart"
-            hint_text = self.font.render(hint, True, (100, 100, 100))
-            hint_rect = hint_text.get_rect(center=(center_x, 140))
-            self.screen.blit(hint_text, hint_rect)
+            if not self.debrief_active:
+                # Still showing completion message before debrief
+                if decision == "DIVERT_RIGHT":
+                    result = "DIVERTED TO RIGHT"
+                    color = (255, 100, 100)
+                else:
+                    result = "STAYED ON LEFT"
+                    color = (100, 150, 255)
+                result_text = self.font_large.render(result, True, color)
+                result_rect = result_text.get_rect(center=(center_x, 80))
+                self.screen.blit(result_text, result_rect)
+        
+        # Draw debrief screen overlay if active
+        if self.debrief_active:
+            self._draw_debrief_screen()
         
         # Update Display
         pygame.display.flip()
