@@ -178,6 +178,7 @@ class TrolleyGUIComplete:
         self.final_left_conf = 0.0
         self.final_right_conf = 0.0
         self.lever_action_started = False
+        self.lever_action_complete = False
         
         # Sound state
         self.sounds_initialized = False
@@ -499,11 +500,17 @@ class TrolleyGUIComplete:
         """Execute the lever divert action."""
         if not self.robot_initialized or self.dry_run:
             print("[GUI] DIVERT ACTION (dry-run or no robot)")
+            # Even in dry-run, mark as complete after a simulated delay
+            import time
+            time.sleep(2.0)  # Simulate lever action duration
+            self.lever_action_complete = True
+            print("[GUI] DIVERT ACTION complete (dry-run)")
             return
         
         from trolley.actions import divert_lever
         print("[GUI] Executing divert lever sequence...")
         divert_lever(self.robot, config.DIVERT_DISTANCE_M, dry_run=False)
+        self.lever_action_complete = True
         print("[GUI] Divert complete!")
     
     def _update_trolley_state(self):
@@ -594,6 +601,7 @@ class TrolleyGUIComplete:
             self.decision = None
             self.decision_reason = ""
             self.lever_action_started = False
+            self.lever_action_complete = False
             print("[GUI] Scenario started! 30 second countdown begins...")
             print("[GUI] Decision will be made at 16 seconds remaining")
     
@@ -610,6 +618,7 @@ class TrolleyGUIComplete:
         self.left_detections = []
         self.right_detections = []
         self.lever_action_started = False
+        self.lever_action_complete = False
         self._start_scenario()
         print("[GUI] Scenario restarted!")
     
@@ -1125,7 +1134,8 @@ def run_simple_mode(args):
                 right_conf_sum=right_conf_sum,
                 state_name=state_name,
                 time_remaining=time_rem,
-                decision="DIVERT_RIGHT" if controller.decision == "DIVERT_RIGHT" else "DEFAULT"
+                decision="DIVERT_RIGHT" if controller.decision == "DIVERT_RIGHT" else "DEFAULT",
+                lever_complete=controller.lever_action_complete
             )
             
             # 3. Input handling

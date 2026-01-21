@@ -218,6 +218,86 @@ class TrolleySimpleGUI:
         rect = surf.get_rect(center=(self.window_width // 2, y_pos))
         self.screen.blit(surf, rect)
     
+    def _draw_train_signal(self, center_x, center_y, top_color, bottom_color, label=""):
+        """
+        Draw a railroad crossing signal with two stacked lights.
+        
+        Args:
+            center_x: X position of signal center
+            center_y: Y position of signal center
+            top_color: Color tuple for top light (RGB)
+            bottom_color: Color tuple for bottom light (RGB)
+            label: Optional label text below signal
+        """
+        # Signal dimensions
+        light_radius = 22
+        light_spacing = 50
+        pole_width = 8
+        housing_width = 60
+        housing_height = 110
+        crossbar_width = 100
+        crossbar_height = 12
+        
+        # Colors
+        black = (20, 20, 20)
+        dark_gray = (40, 40, 40)
+        housing_color = (30, 30, 30)
+        
+        # Draw the pole (vertical)
+        pole_top = center_y - housing_height // 2 - 20
+        pole_bottom = center_y + housing_height // 2 + 40
+        pygame.draw.rect(self.screen, dark_gray, 
+                        (center_x - pole_width // 2, pole_top, pole_width, pole_bottom - pole_top))
+        
+        # Draw crossbar (X shape) at top
+        crossbar_y = pole_top - 5
+        # Draw the X
+        x_size = 35
+        x_thickness = 10
+        # Left arm of X
+        pygame.draw.line(self.screen, black, 
+                        (center_x - x_size, crossbar_y - x_size), 
+                        (center_x + x_size, crossbar_y + x_size), x_thickness)
+        # Right arm of X
+        pygame.draw.line(self.screen, black, 
+                        (center_x + x_size, crossbar_y - x_size), 
+                        (center_x - x_size, crossbar_y + x_size), x_thickness)
+        
+        # Draw signal housing (rounded rectangle)
+        housing_rect = pygame.Rect(center_x - housing_width // 2, 
+                                   center_y - housing_height // 2,
+                                   housing_width, housing_height)
+        pygame.draw.rect(self.screen, housing_color, housing_rect, border_radius=10)
+        pygame.draw.rect(self.screen, black, housing_rect, 3, border_radius=10)
+        
+        # Draw top light
+        top_light_y = center_y - light_spacing // 2
+        # Outer ring (dark)
+        pygame.draw.circle(self.screen, black, (center_x, top_light_y), light_radius + 4)
+        # Light itself
+        pygame.draw.circle(self.screen, top_color, (center_x, top_light_y), light_radius)
+        # Highlight/glow effect
+        highlight_color = tuple(min(255, c + 60) for c in top_color)
+        pygame.draw.circle(self.screen, highlight_color, 
+                          (center_x - 5, top_light_y - 5), light_radius // 3)
+        
+        # Draw bottom light
+        bottom_light_y = center_y + light_spacing // 2
+        # Outer ring (dark)
+        pygame.draw.circle(self.screen, black, (center_x, bottom_light_y), light_radius + 4)
+        # Light itself
+        pygame.draw.circle(self.screen, bottom_color, (center_x, bottom_light_y), light_radius)
+        # Highlight/glow effect
+        highlight_color = tuple(min(255, c + 60) for c in bottom_color)
+        pygame.draw.circle(self.screen, highlight_color, 
+                          (center_x - 5, bottom_light_y - 5), light_radius // 3)
+        
+        # Draw label below signal
+        if label:
+            label_surf = self.font.render(label, True, self.COLOR_TEXT)
+            label_rect = label_surf.get_rect(center=(center_x, pole_bottom + 25))
+            self.screen.blit(label_surf, label_rect)
+    
     def _draw_panel(self, x_start, label, frame_cv2, conf_sum, count, is_left=True):
         """Draw a side panel with confidence, camera feed, and count."""
         panel_color = (240, 240, 240)  # Light gray panel background
@@ -310,8 +390,13 @@ class TrolleySimpleGUI:
                left_count: int, right_count: int, 
                left_conf_sum: float, right_conf_sum: float,
                state_name: str, time_remaining: float,
-               decision: str = "DEFAULT"):
-        """Main render loop."""
+               decision: str = "DEFAULT",
+               lever_complete: bool = False):
+        """Main render loop.
+        
+        Args:
+            lever_complete: True if the lever action has finished executing (not just started)
+        """
         
         # Event handling
         for event in pygame.event.get():
@@ -343,6 +428,73 @@ class TrolleySimpleGUI:
         # Draw Right Panel
         right_panel_x = self.panel_width + self.center_width
         self._draw_panel(right_panel_x, "Right", right_frame_cv2, right_conf_sum, right_count, is_left=False)
+        
+        # === TRAIN SIGNAL LIGHTS ===
+        # Colors
+        YELLOW = (255, 200, 0)      # Default/waiting
+        GREEN = (0, 220, 0)         # Track selected (safe to proceed)
+        RED = (220, 0, 0)           # Track not selected (danger)
+        DIM_YELLOW = (180, 140, 0)  # Dimmer yellow for variety
+        
+        # Signal positions - at the boundary between panels and track area, near top
+        # Position them right at the edge of each panel
+        left_signal_x = self.panel_width + 110
+        right_signal_x = self.panel_width + self.center_width - 120
+        signal_y = self.window_height // 2  - 100# halfway down the screen
+        
+        # Determine signal colors based on state and decision
+        if state_name in ["IDLE", "COUNTDOWN", "DECIDING"]:
+            # Default: both signals yellow (waiting)
+            left_top = YELLOW
+            left_bottom = DIM_YELLOW
+            right_top = DIM_YELLOW
+            right_bottom = YELLOW
+        elif state_name == "EXECUTING":
+            # During execution - show pending state
+            if decision == "DIVERT_RIGHT":
+                # Diverting: left stays yellow, right flashes/pulses
+                # (We'll show yellow until lever completes)
+                left_top = YELLOW
+                left_bottom = DIM_YELLOW
+                right_top = DIM_YELLOW
+                right_bottom = YELLOW
+            else:
+                # Staying left - immediately show green on left, red on right
+                left_top = GREEN
+                left_bottom = GREEN
+                right_top = RED
+                right_bottom = RED
+        elif state_name in ["ARRIVING", "COMPLETE"]:
+            # Final decision is locked in
+            if decision == "DIVERT_RIGHT":
+                if lever_complete:
+                    # Lever finished - show right is selected
+                    left_top = RED
+                    left_bottom = RED
+                    right_top = GREEN
+                    right_bottom = GREEN
+                else:
+                    # Still waiting for lever to complete
+                    left_top = YELLOW
+                    left_bottom = DIM_YELLOW
+                    right_top = DIM_YELLOW
+                    right_bottom = YELLOW
+            else:
+                # Stayed on left track
+                left_top = GREEN
+                left_bottom = GREEN
+                right_top = RED
+                right_bottom = RED
+        else:
+            # Fallback
+            left_top = YELLOW
+            left_bottom = YELLOW
+            right_top = YELLOW
+            right_bottom = YELLOW
+        
+        # Draw the signals
+        self._draw_train_signal(left_signal_x, signal_y, left_top, left_bottom, "LEFT TRACK")
+        self._draw_train_signal(right_signal_x, signal_y, right_top, right_bottom, "RIGHT TRACK")
         
         # Draw status text and timer
         center_x = self.window_width // 2
