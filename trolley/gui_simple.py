@@ -57,6 +57,10 @@ class TrolleySimpleGUI:
         self._recalculate_layout()
         
         self.start_time = None
+        
+        # Wrap-up animation tracking
+        self.wrapup_start_time = None
+        self.wrapup_duration = 3.0  # 3 seconds of wrap-up animation after timer hits 0
     
     def _recalculate_layout(self):
         """Recalculate layout when window is resized."""
@@ -79,18 +83,53 @@ class TrolleySimpleGUI:
             center_start = self.panel_width
             self.bg_x = center_start + (self.center_width - new_w) // 2
         
-    def _draw_trolley(self, state, decision, time_remaining):
-        """Draw the trolley on the track.
-        
-        Trolley only appears when time_remaining <= 10 seconds (ARRIVING state).
-        It travels from start to junction over the final 10 seconds.
+    def _ease_out_cubic(self, t):
+        """Cubic ease-out function for smooth deceleration."""
+        return 1 - pow(1 - t, 3)
+    
+    def _ease_in_out_quad(self, t):
+        """Quadratic ease-in-out for smooth acceleration/deceleration."""
+        if t < 0.5:
+            return 2 * t * t
+        return 1 - pow(-2 * t + 2, 2) / 2
+    
+    def _decay_curve(self, t, curve_strength=0.6):
         """
+        Decay curve for branching animation.
+        Returns (x_offset_ratio, y_offset_ratio) for curved path.
+        t: progress from 0 to 1
+        curve_strength: how much the path curves outward (0 = straight, 1 = very curved)
+        """
+        # Use exponential decay for x (branch outward quickly then level off)
+        x_progress = 1 - pow(1 - t, 2.5)  # Faster initial movement
+        
+        # Y progress with slight ease
+        y_progress = self._ease_out_cubic(t)
+        
+        # Add curve: the path bows outward in the middle
+        curve_offset = curve_strength * 4 * t * (1 - t)  # Peaks at t=0.5
+        
+        return x_progress + curve_offset * 0.3, y_progress
+    
+    def _draw_trolley(self, state, decision, time_remaining):
+        """Draw the trolley on the track with smooth continuous animation.
+        
+        Animation phases:
+        - ARRIVING (time_remaining 10->0): Trolley travels from start toward junction
+        - COMPLETE (wrap-up): Trolley continues past junction along the chosen track
+        
+        If staying left: continuous movement down the left track
+        If diverted right: follows a decay curve branching to the right track
+        """
+        import time
+        
         if not self.assets_loaded:
             return
 
         # Trolley is HIDDEN during COUNTDOWN and EXECUTING states
         # Only visible during ARRIVING and COMPLETE states
         if state in ["IDLE", "COUNTDOWN", "DECIDING", "EXECUTING"]:
+            self.wrapup_start_time = None  # Reset wrap-up timer
             return  # Trolley not visible yet
         
         # Key positions (based on track asset layout)
@@ -112,34 +151,55 @@ class TrolleySimpleGUI:
         # Scales (perspective: small at top, large at bottom)
         start_scale = 0.048
         split_scale = 0.15
-        end_scale = 0.3
+        end_scale = 0.35  # Slightly larger at end for more dramatic effect
         
-        # Calculate Progress - trolley travels over final 10 seconds
-        # At time_remaining=10, progress=0. At time_remaining=0, progress=1.0
+        # Calculate progress based on state
         if state == "ARRIVING":
-            progress = max(0.0, min(1.0, (10.0 - time_remaining) / 10.0))
+            # Phase 1: Approaching the junction (time_remaining 10->0)
+            # Progress 0->1 as trolley approaches junction
+            arrival_progress = max(0.0, min(1.0, (10.0 - time_remaining) / 10.0))
+            
+            # Apply easing for smoother motion
+            eased_progress = self._ease_in_out_quad(arrival_progress)
+            
+            # Interpolate from start to split point
+            cur_x = start_x + (split_x - start_x) * eased_progress
+            cur_y = start_y + (split_y - start_y) * eased_progress
+            cur_scale = start_scale + (split_scale - start_scale) * eased_progress
+            
         elif state == "COMPLETE":
-            progress = 1.0
-        else:
-            progress = 0.0
-        
-        # Phase 1: Following the main track from start to junction
-        cur_x = start_x + (split_x - start_x) * progress
-        cur_y = start_y + (split_y - start_y) * progress
-        cur_scale = start_scale + (split_scale - start_scale) * progress
-        
-        # Phase 2: Past the split point (COMPLETE state - show final position)
-        if state == "COMPLETE":
+            # Phase 2: Past the junction - continue along the chosen track
+            
+            # Initialize wrap-up timer on first COMPLETE frame
+            if self.wrapup_start_time is None:
+                self.wrapup_start_time = time.time()
+            
+            # Calculate wrap-up progress (0->1 over wrapup_duration seconds)
+            wrapup_elapsed = time.time() - self.wrapup_start_time
+            wrapup_progress = min(1.0, wrapup_elapsed / self.wrapup_duration)
+            
+            # Apply easing to wrap-up for smooth deceleration at end
+            eased_wrapup = self._ease_out_cubic(wrapup_progress)
+            
             if decision == "DIVERT_RIGHT":
-                # Divert to right track (curved path)
-                cur_x = split_x + (right_end_x - split_x) * 0.5
-                cur_y = split_y + (right_end_y - split_y) * 0.4
-                cur_scale = split_scale + (end_scale - split_scale) * 0.4
+                # Divert to right track - use decay curve for smooth branching
+                curve_x, curve_y = self._decay_curve(eased_wrapup, curve_strength=0.7)
+                
+                # Calculate position along curved path to right end
+                cur_x = split_x + (right_end_x - split_x) * curve_x
+                cur_y = split_y + (right_end_y - split_y) * curve_y
+                cur_scale = split_scale + (end_scale - split_scale) * eased_wrapup
             else:
-                # Stay on left track (continue diagonal)
-                cur_x = split_x + (left_end_x - split_x) * 0.5
-                cur_y = split_y + (left_end_y - split_y) * 0.4
-                cur_scale = split_scale + (end_scale - split_scale) * 0.4
+                # Stay on left track - continue smoothly down the diagonal
+                # Linear interpolation from split to left end with easing
+                cur_x = split_x + (left_end_x - split_x) * eased_wrapup
+                cur_y = split_y + (left_end_y - split_y) * eased_wrapup
+                cur_scale = split_scale + (end_scale - split_scale) * eased_wrapup
+        else:
+            # Fallback - shouldn't reach here
+            cur_x = start_x
+            cur_y = start_y
+            cur_scale = start_scale
         
         # Draw Trolley
         w = int(self.trolley_base_w * cur_scale)
